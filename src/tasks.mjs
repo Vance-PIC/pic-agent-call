@@ -3,7 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 const TIMEOUT_MINUTES = 30;
 
 function _now() {
-    return new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const d = new Date();
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d - offset).toISOString().replace('T', ' ').slice(0, 19);
 }
 
 export function initAgentsTable(db) {
