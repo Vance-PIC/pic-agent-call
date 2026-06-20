@@ -1,0 +1,16 @@
+P5 Function Test — 2026-06-20T14:34:47.853Z
+==================================================
+[P5] initialize                     PASS
+[P5]   → tools count: 20
+[P5] tools/list (>= 20)             PASS
+[P5] stats                          PASS
+[P5] add-observation                PASS
+[P5] query-entity                   PASS
+[P5] register_agent                 PASS
+[P5] agent_status                   PASS
+[P5] create_task                    PASS
+[P5] channel_send                   PASS
+[P5]   → unread count: 1
+[P5] channel_list_unread            PASS
+[P5] ================================
+[P5] 10/10 PASS
