@@ -6,6 +6,13 @@ import { resolveMemoryPaths, initDatabase } from '../src/db.mjs';
 import * as memory from '../src/memory.mjs';
 import * as channel from '../src/channel.mjs';
 import * as tasks from '../src/tasks.mjs';
+import {
+    resolveSessionId,
+    getRegistration,
+    findAgentIdConflict,
+    registerAgent,
+    getAgentStatus,
+} from '../src/status.mjs';
 
 const { dbPath, jsonPath } = resolveMemoryPaths();
 let db;
@@ -189,6 +196,57 @@ server.tool('channel_ack',
     async (args) => {
         const r = channel.ackMessage(db, args.message_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
+    }
+);
+
+// ── Agent 身份管理 ────────────────────────────────────────────────────────────
+
+server.tool('register_agent',
+    '【agent】登記或更新當前 AI 視窗的身份（agent_id + role）。session_id 自動從環境變數讀取。若 agent_id 已被其他 session 占用，回傳 conflict 資訊供 AI 詢問 user。換角色時自動處理孤兒訊息並通知原始發送者。',
+    {
+        agent_id: z.string().min(1).max(50).describe('代理人識別碼，例如 CC-PG1'),
+        role: z.string().max(50).optional().describe('角色標籤，例如 PG、SA、DevOps'),
+    },
+    async ({ agent_id, role }) => {
+        const sessionId = resolveSessionId();
+
+        // 檢查 agent_id 是否被其他 session 占用
+        const conflict = findAgentIdConflict(db, agent_id, sessionId);
+        if (conflict) {
+            return textJson({
+                conflict: true,
+                occupied_by_session: conflict.session_id,
+                current_role: conflict.role,
+                message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。`,
+            });
+        }
+
+        const result = registerAgent(db, sessionId, agent_id, role);
+        return textJson(result);
+    }
+);
+
+server.tool('agent_status',
+    '【agent】查詢當前 AI 視窗的身份與未讀訊息數量。session_id 自動讀取。',
+    {},
+    async () => {
+        const sessionId = resolveSessionId();
+        const reg = getRegistration(db, sessionId);
+
+        if (!reg) {
+            return textJson({
+                registered: false,
+                session_id: sessionId,
+                message: '尚未登記身份，請呼叫 register_agent',
+            });
+        }
+
+        const status = getAgentStatus(db, sessionId);
+        return textJson({
+            registered: true,
+            ...status,
+            session_id: sessionId,
+        });
     }
 );
 

@@ -184,3 +184,54 @@ export function getTask(
   task_id: string
 ): Task | { success: false, reason: 'not_found' | 'validation_error' }
 ```
+
+---
+
+## src/status.mjs
+
+```js
+// 解析當前 session_id
+// 優先序：CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → hostname-pid
+export function resolveSessionId(): string
+
+// 以 session_id 查詢 agents 表
+export function getRegistration(
+  db: DatabaseSync,
+  sessionId: string
+): { agent_id: string, role: string, session_id: string } | null
+
+// 偵測 agent_id 被其他 session 占用
+export function findAgentIdConflict(
+  db: DatabaseSync,
+  agentId: string,
+  sessionId: string
+): { agent_id: string, session_id: string, role: string } | null
+
+// 換角色時處理孤兒訊息：
+// 1. 找舊 agent_id 所有 UNREAD 訊息
+// 2. 對每個唯一 sender 發 SYSTEM channel 通知
+// 3. 將孤兒訊息標記為 ORPHANED
+// 回傳孤兒訊息數量
+export function handleOrphanedMessages(
+  db: DatabaseSync,
+  oldAgentId: string,
+  newAgentId: string
+): number
+
+// Upsert agent registration（以 session_id 為 key）
+// 換 agent_id 時自動觸發孤兒訊息處理
+export function registerAgent(
+  db: DatabaseSync,
+  sessionId: string,
+  agentId: string,
+  role?: string
+): { success: true, agent_id, role, session_id, previous?: string, orphans_notified?: number }
+ | { success: false, reason: string }
+
+// 查詢 agent 狀態（給 statusline 用）
+// display 格式：[CC-PG1|PG] 📨3
+export function getAgentStatus(
+  db: DatabaseSync,
+  sessionId: string
+): { agent_id: string, role: string, unread: number, display: string } | null
+```

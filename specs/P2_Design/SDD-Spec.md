@@ -7,6 +7,7 @@
 
 - **Runtime**: Node.js >= 22.0.0（`node:sqlite` 內建）
 - **Protocol**: MCP via `@modelcontextprotocol/sdk`
+- **Tools**: 20（18 原有 + register_agent + agent_status）
 - **Module format**: 純 ESM（`.mjs`）
 
 ---
@@ -47,7 +48,9 @@ pic-agent-call/
 | `src/memory.mjs` | entities / observations / relations CRUD | src/db.mjs |
 | `src/channel.mjs` | 跨代理人訊息 send/list/claim/ack | src/db.mjs |
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |
-| `bin/server.mjs` | MCP transport + 18 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
+| `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢 | src/db.mjs, node:os, node:crypto |
+| `bin/server.mjs` | MCP transport + 20 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
+| `bin/statusline.mjs` | CC statusbar hook CLI：輸出 `[agent_id\|role] 📨N` 一行後 exit 0 | src/db.mjs, src/status.mjs |
 
 ---
 
@@ -86,6 +89,12 @@ pic-agent-call/
 | channel_list_unread | channel.listUnread |
 | channel_claim | channel.claimMessage |
 | channel_ack | channel.ackMessage |
+
+### Agent Status
+| Tool | 對應模組函式 |
+|------|-------------|
+| register_agent | status.registerAgent |
+| agent_status | status.getAgentStatus |
 
 ---
 

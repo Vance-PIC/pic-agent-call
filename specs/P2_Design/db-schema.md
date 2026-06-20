@@ -82,10 +82,19 @@ CREATE TABLE IF NOT EXISTS agents (
     agent_timeout_sec  INTEGER NOT NULL DEFAULT 120,
     poll_interval_sec  INTEGER NOT NULL DEFAULT 30,
     term_key           TEXT,
+    session_id         TEXT,   -- CC: CLAUDE_CODE_SESSION_ID / AGY: ANTIGRAVITY_CONVERSATION_ID
+    role               TEXT,   -- 'SA' | 'PG' | 'QA' | 'DevOps' | 自定義
     created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )
+CREATE UNIQUE INDEX idx_agents_session_id ON agents(session_id)
 ```
+
+**身份解析優先序**（server.mjs runtime）：
+1. `CLAUDE_CODE_SESSION_ID` env（CC）
+2. `ANTIGRAVITY_CONVERSATION_ID` env（AGY）
+3. `AGENT_SESSION_ID` env（通用）
+4. `hostname-pid`（fallback）
 
 ## agent_collaboration_channel
 
@@ -95,7 +104,7 @@ CREATE TABLE IF NOT EXISTS agent_collaboration_channel (
     sender      TEXT NOT NULL,
     receiver    TEXT NOT NULL,
     priority    INTEGER DEFAULT 5,
-    status      TEXT DEFAULT 'UNREAD',
+    status      TEXT DEFAULT 'UNREAD',  -- UNREAD | IN_PROGRESS | READ | ORPHANED
     lock_owner  TEXT,
     lock_time   TEXT,
     message     TEXT NOT NULL,
@@ -113,4 +122,11 @@ CREATE INDEX idx_acc_receiver_status ON agent_collaboration_channel(receiver, st
 - `tasks` 補 `type` 欄位
 - `tasks` 補 `relay_to` 欄位
 - `agents` 補 `term_key` 欄位
+- `agents` 補 `session_id` 欄位
+- `agents` 補 `role` 欄位
+- `agents` 建 UNIQUE INDEX `idx_agents_session_id`
 - entities 為空且 JSON 快照存在 → `migrateFromJson()` 自動匯入
+
+## 孤兒訊息（ORPHANED）
+
+agent 換角色時，舊 `agent_id` 的 UNREAD 訊息標記為 `ORPHANED`，同時對每個 sender 發送 SYSTEM 通知。ORPHANED 訊息不出現在 `channel_list_unread` 結果中。

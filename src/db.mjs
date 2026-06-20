@@ -130,9 +130,12 @@ export function initDatabase(dbPath, jsonPath) {
         `ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'task' CHECK(type IN ('task','final'))`,
         `ALTER TABLE tasks ADD COLUMN relay_to TEXT`,
         `ALTER TABLE agents ADD COLUMN term_key TEXT`,
+        `ALTER TABLE agents ADD COLUMN session_id TEXT`,
+        `ALTER TABLE agents ADD COLUMN role TEXT`,
     ]) {
         try { db.exec(sql); } catch (_) {}
     }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {
