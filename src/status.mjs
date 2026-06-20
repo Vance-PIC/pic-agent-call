@@ -146,10 +146,19 @@ export function getAgentStatus(db, sessionId) {
 
     const { agent_id, role } = reg;
 
-    const row = db.prepare(
-        `SELECT COUNT(*) as count FROM agent_collaboration_channel
-         WHERE receiver = ? AND status = 'UNREAD'`
-    ).get(agent_id);
+    let row;
+    if (role) {
+        const pool = `${role}?`;
+        row = db.prepare(
+            `SELECT COUNT(*) as count FROM agent_collaboration_channel
+             WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'all' OR receiver = ?)`
+        ).get(agent_id, pool);
+    } else {
+        row = db.prepare(
+            `SELECT COUNT(*) as count FROM agent_collaboration_channel
+             WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'all')`
+        ).get(agent_id);
+    }
 
     const unread = row?.count || 0;
     const roleLabel = role ? `|${role}` : '';

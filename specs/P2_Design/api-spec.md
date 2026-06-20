@@ -230,6 +230,10 @@ export function registerAgent(
 
 // 查詢 agent 狀態（給 statusline 用）
 // display 格式：[CC-PG1|PG] 📨3
+// unread 計算 SQL 條件：
+//   status = 'UNREAD' AND (receiver = agent_id OR receiver = 'all' OR receiver = pool)
+//   pool = role + '?'（e.g. agent_id='CC-PG1', role='PG' → pool='PG?'）
+//   role 為 null 時只查 agent_id 與 'all'
 export function getAgentStatus(
   db: DatabaseSync,
   sessionId: string

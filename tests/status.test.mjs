@@ -344,4 +344,42 @@ describe('getAgentStatus()', () => {
     // 期望格式：[CC-PG2|PG] 📨3
     expect(result.display).toBe('[CC-PG2|PG] 📨3');
   });
+
+  // 19. 廣播訊息（receiver='all'）計入 unread
+  test('19. receiver=all 廣播訊息計入 unread', () => {
+    registerAgent(db, 'sess-status-4', 'CC-PG3', 'PG');
+
+    insertChannelMsg(db, { message_id: 'msg-all-001', sender: 'SYS', receiver: 'all' });
+    insertChannelMsg(db, { message_id: 'msg-all-002', sender: 'SYS', receiver: 'CC-PG3' });
+
+    const result = getAgentStatus(db, 'sess-status-4');
+
+    expect(result.unread).toBe(2);
+  });
+
+  // 20. pool 訊息（receiver='PG?'）計入 unread
+  test('20. receiver=PG? pool 訊息計入 unread', () => {
+    registerAgent(db, 'sess-status-5', 'CC-PG4', 'PG');
+
+    insertChannelMsg(db, { message_id: 'msg-pool-001', sender: 'SA', receiver: 'PG?' });
+    insertChannelMsg(db, { message_id: 'msg-pool-002', sender: 'SA', receiver: 'CC-PG4' });
+    insertChannelMsg(db, { message_id: 'msg-pool-003', sender: 'SA', receiver: 'all' });
+
+    const result = getAgentStatus(db, 'sess-status-5');
+
+    expect(result.unread).toBe(3);
+  });
+
+  // 21. 無 role 時只查個人 + all，不查 pool
+  test('21. role=null 時不查 pool', () => {
+    registerAgent(db, 'sess-status-6', 'CC-ANON', null);
+
+    insertChannelMsg(db, { message_id: 'msg-anon-001', sender: 'X', receiver: 'CC-ANON' });
+    insertChannelMsg(db, { message_id: 'msg-anon-002', sender: 'X', receiver: 'all' });
+    insertChannelMsg(db, { message_id: 'msg-anon-003', sender: 'X', receiver: 'PG?' }); // 不應計入
+
+    const result = getAgentStatus(db, 'sess-status-6');
+
+    expect(result.unread).toBe(2);
+  });
 });
