@@ -93,8 +93,20 @@ pic-agent-call/
 ### Agent Status
 | Tool | 對應模組函式 |
 |------|-------------|
-| register_agent | status.registerAgent |
+| register_agent | status.registerAgent + 本地快取寫入 |
 | agent_status | status.getAgentStatus |
+
+#### register_agent MCP 本地快取寫入規範
+
+`register_agent` MCP tool 除更新 SQLite `agents` 表外，**必須同時寫入本地快取檔**：
+
+- **路徑**：`<dbDir>/agent-sessions/<termKey>.json`（dbDir 為 memory-graph.db 所在目錄即 `.memory/`）
+- **格式**：`{ "agent_id": string, "term_key": string, "ts": ISOString }`
+- **termKey 解析優先序**：
+  1. `CLAUDE_CODE_SESSION_ID` → `cc-<sessionId.slice(0, 8)>`
+  2. `ANTIGRAVITY_CONVERSATION_ID` → `agy-<conversationId.slice(0, 8)>`
+  3. fallback → `ppid-<process.ppid>`
+- **目的**：確保 statusline hook 與 preflight-hook 能同步識別身分
 
 ---
 

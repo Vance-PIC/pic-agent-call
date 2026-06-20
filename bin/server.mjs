@@ -2,6 +2,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'node:fs';
+import path from 'node:path';
 import { resolveMemoryPaths, initDatabase } from '../src/db.mjs';
 import * as memory from '../src/memory.mjs';
 import * as channel from '../src/channel.mjs';
@@ -201,6 +203,23 @@ server.tool('channel_ack',
 
 // ── Agent 身份管理 ────────────────────────────────────────────────────────────
 
+function resolveTermKey() {
+    const ccId = process.env.CLAUDE_CODE_SESSION_ID;
+    if (ccId) return `cc-${ccId.slice(0, 8)}`;
+    const agyId = process.env.ANTIGRAVITY_CONVERSATION_ID;
+    if (agyId) return `agy-${agyId.slice(0, 8)}`;
+    return `ppid-${process.ppid}`;
+}
+
+function writeAgentSessionCache(agentId, termKey) {
+    try {
+        const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const filePath = path.join(sessionDir, `${termKey}.json`);
+        fs.writeFileSync(filePath, JSON.stringify({ agent_id: agentId, term_key: termKey, ts: new Date().toISOString() }), 'utf8');
+    } catch (_) {}
+}
+
 server.tool('register_agent',
     '【agent】登記或更新當前 AI 視窗的身份（agent_id + role）。session_id 自動從環境變數讀取。若 agent_id 已被其他 session 占用，回傳 conflict 資訊供 AI 詢問 user。換角色時自動處理孤兒訊息並通知原始發送者。',
     {
@@ -222,7 +241,12 @@ server.tool('register_agent',
         }
 
         const result = registerAgent(db, sessionId, agent_id, role);
-        return textJson(result);
+
+        // 同步寫入本地快取（供 statusline hook 識別身分）
+        const termKey = resolveTermKey();
+        writeAgentSessionCache(agent_id, termKey);
+
+        return textJson({ ...result, term_key: termKey });
     }
 );
 
