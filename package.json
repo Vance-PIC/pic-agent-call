@@ -4,7 +4,7 @@
   "description": "AI multi-agent communication MCP server — Memory, Channel, Task-Broker",
   "type": "module",
   "bin": {
-    "pic-agent-call": "./bin/server.mjs"
+    "pic-agent-call": "./bin/pic-agent-call"
   },
   "engines": {
     "node": ">=22.0.0"
