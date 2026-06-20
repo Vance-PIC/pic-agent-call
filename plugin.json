@@ -1,5 +1,5 @@
 {
-  "name": "@pic-ai/agent-call",
+  "name": "@pic-ai/pic-agent-call",
   "version": "1.0.0",
   "description": "Cross-AI MCP server for memory, task-broker, and channel communication",
   "skills": [
