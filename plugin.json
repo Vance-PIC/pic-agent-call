@@ -1,0 +1,16 @@
+{
+  "name": "@pic-ai/agent-call",
+  "version": "1.0.0",
+  "description": "Cross-AI MCP server for memory, task-broker, and channel communication",
+  "skills": [
+    {
+      "name": "agent-call",
+      "path": "skills/agent-call.md",
+      "description": "AI 自治通訊閉環操作指引（Memory 知識層 + task-broker 任務層 + channel 訊息層）"
+    }
+  ],
+  "mcp": {
+    "command": "node",
+    "args": ["./bin/server.mjs"]
+  }
+}

@@ -43,7 +43,7 @@ pic-agent-call/
 
 | 模組 | 職責 | 依賴 |
 |------|------|------|
-| `src/db.mjs` | DB init、路徑解析、JSON 快照、重試機制 | node:sqlite, node:fs, node:path, node:os |
+| `src/db.mjs` | DB init、路徑解析、JSON 快照、重試機制、`setup()` 便利初始化入口 | node:sqlite, node:fs, node:path, node:os |
 | `src/memory.mjs` | entities / observations / relations CRUD | src/db.mjs |
 | `src/channel.mjs` | 跨代理人訊息 send/list/claim/ack | src/db.mjs |
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |

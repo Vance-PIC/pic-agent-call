@@ -8,6 +8,16 @@
 // 寫入者身分常數（PID + USER）
 export const IDENTITY: string
 
+// 頂層便利初始化（整合路徑解析 + DB 初始化）
+// 回傳 { db, dbPath, jsonPath }
+// 內部依序呼叫：resolveMemoryPaths() → initDatabase(dbPath, jsonPath)
+// options.dbPath 指定時跳過路徑解析邏輯，直接使用指定路徑
+export function setup(options?: { dbPath?: string }): {
+  db: DatabaseSync,
+  dbPath: string,
+  jsonPath: string
+}
+
 // 路徑解析
 // 優先序：MEMORY_DB_PATH env → settings.local.json → cwd/.memory → ~/.memory
 export function resolveMemoryPaths(): { dbPath: string, jsonPath: string }
@@ -123,7 +133,8 @@ export function ackMessage(
 ## src/tasks.mjs
 
 ```js
-// agents 表初始化（由 initDatabase 呼叫）
+// agents 表初始化（內部函式，已整合至 db.mjs 的 initDatabase）
+// 外部不需直接呼叫；保留 export 供測試隔離使用
 export function initAgentsTable(db: DatabaseSync): void
 
 // 建立任務（同 feature+payload 冪等）

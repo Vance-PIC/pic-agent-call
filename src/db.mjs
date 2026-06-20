@@ -142,6 +142,14 @@ export function initDatabase(dbPath, jsonPath) {
     return db;
 }
 
+export function setup(options = {}) {
+    const paths = options.dbPath
+        ? { dbPath: options.dbPath, jsonPath: path.join(path.dirname(options.dbPath), 'memory-graph.json') }
+        : resolveMemoryPaths();
+    const db = initDatabase(paths.dbPath, paths.jsonPath);
+    return { db, dbPath: paths.dbPath, jsonPath: paths.jsonPath };
+}
+
 export function syncDbToJson(db, jsonPath) {
     const rows = db.prepare(`
         SELECT e.name, e.entityType, e.description, o.observation
