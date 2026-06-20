@@ -1,0 +1,9 @@
+tests/
+specs/
+evidence/
+.agent-sessions/
+.memory/
+node_modules/
+.git/
+jest.config.js
+*.test.js

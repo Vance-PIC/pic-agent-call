@@ -1,0 +1,30 @@
+{
+  "name": "@pic-ai/agent-call",
+  "version": "1.0.0",
+  "description": "AI multi-agent communication MCP server — Memory, Channel, Task-Broker",
+  "type": "module",
+  "bin": {
+    "agent-call": "./bin/server.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node bin/server.mjs",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --no-coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2"
+  }
+}
