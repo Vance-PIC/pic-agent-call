@@ -1,10 +1,37 @@
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+function detectActiveAgyConversationId() {
+    try {
+        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+        if (!fs.existsSync(brainDir)) return null;
+        const dirs = fs.readdirSync(brainDir);
+        let latestDir = null;
+        let latestTime = 0;
+        for (const d of dirs) {
+            if (d.length !== 36) continue;
+            const dp = path.join(brainDir, d);
+            const stat = fs.statSync(dp);
+            if (stat.isDirectory()) {
+                if (stat.mtimeMs > latestTime) {
+                    latestTime = stat.mtimeMs;
+                    latestDir = d;
+                }
+            }
+        }
+        return latestDir;
+    } catch (_) {
+        return null;
+    }
+}
 
 // 解析當前 session_id（MCP server 啟動後繼承 parent env）
 export function resolveSessionId() {
     return process.env.CLAUDE_CODE_SESSION_ID      // CC
         || process.env.ANTIGRAVITY_CONVERSATION_ID  // AGY
+        || detectActiveAgyConversationId()          // 動態偵測 AGY 對話 ID
         || process.env.AGENT_SESSION_ID             // 通用
         || `${os.hostname()}-${process.pid}`;       // fallback
 }

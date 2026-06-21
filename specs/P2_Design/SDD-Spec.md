@@ -6,7 +6,7 @@
 提供三大功能層：Memory（知識圖譜）、Channel（跨代理人訊息）、Task-Broker（任務派發）。
 
 - **Runtime**: Node.js >= 22.0.0（`node:sqlite` 內建）
-- **Protocol**: MCP via `@modelcontextprotocol/sdk`
+- **Protocol**: MCP via `@modelcontextprotocol/sdk`（本地測試掛載名稱為 `pic-agent-call` 以防新舊版混淆）
 - **Tools**: 20（18 原有 + register_agent + agent_status）
 - **Module format**: 純 ESM（`.mjs`）
 

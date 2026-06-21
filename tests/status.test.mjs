@@ -98,14 +98,20 @@ describe('resolveSessionId()', () => {
   // 3. 兩者都無時 fallback 含 hostname-pid
   test('3. 兩者都無時 fallback 包含 hostname-pid，不為空且為字串', () => {
     // All env vars deleted in beforeEach
+    const originalHomedir = os.homedir;
+    os.homedir = () => '/nonexistent-dir-to-force-fallback';
 
-    const result = resolveSessionId();
+    try {
+      const result = resolveSessionId();
 
-    expect(typeof result).toBe('string');
-    expect(result.length).toBeGreaterThan(0);
-    // fallback format: hostname-pid
-    expect(result).toContain(String(process.pid));
-    expect(result).toContain(os.hostname());
+      expect(typeof result).toBe('string');
+      expect(result.length).toBeGreaterThan(0);
+      // fallback format: hostname-pid
+      expect(result).toContain(String(process.pid));
+      expect(result).toContain(os.hostname());
+    } finally {
+      os.homedir = originalHomedir;
+    }
   });
 });
 
