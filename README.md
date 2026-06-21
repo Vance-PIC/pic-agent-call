@@ -159,12 +159,77 @@ CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → 
 **Statusline 顯示格式：**
 
 ```
-[CC-SA1|SA] 📨3
+🔴3·CC-SA1
 ```
 
-表示 agent `CC-SA1`，角色 `SA`，有 3 則未讀訊息。
+表示 agent `CC-SA1`，有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
 
-Claude Code 使用者可搭配 `bin/statusline.mjs` 將此資訊顯示在 statusbar（詳見 `bin/statusline.mjs`）。
+Claude Code 使用者可搭配 `bin/statusline.mjs` 將此資訊顯示在 statusbar 中。
+
+### Statusline 設定指南
+
+#### 1. 前置條件
+- **註冊身份**：在啟用狀態列之前，當前 AI Session 必須先呼叫 `register_agent` 成功登記身份（`agent_id` + `role`）。
+- **啟用 MCP 伺服器**：MCP 伺服器 `pic-agent-call` 必須已正確載入，且在各平台的啟用列表（如 `enabledMcpjsonServers` 或設定檔）中。
+
+#### 2. bin/statusline.mjs 說明
+`bin/statusline.mjs` 是一個輕量級的查詢工具，它會執行以下操作：
+1. 自動解析當前 Session ID。
+2. 查詢 SQLite 大腦資料庫（`memory-graph.db`）中的 `agents` 表與 `agent_collaboration_channel` 通訊資料表。
+3. 取得當前代理人身份與未讀訊息數量，輸出格式為 `🟢0·CC-PG1`（有未讀時為 `🔴3·CC-PG1`），並以 `exit 0` 結束。
+4. **狀態列整合應用**：直接由 CC `statusLine` 指令呼叫，綠燈代表無未讀，紅燈代表有未讀訊息待處理。
+
+#### 3. Claude Code (CC) Statusline 設定
+在 Claude Code 的全域設定檔（`~/.claude/settings.json`）中，加入 `"statusLine"` 欄位（值為字串指令）：
+
+```json
+{
+  "statusLine": "bash bin/statusline.sh seg_brain"
+}
+```
+
+> 若 CC 啟動目錄即為本專案根目錄，可用相對路徑 `bin/statusline.sh`。  
+> 若從其他目錄啟動，改為絕對路徑（Windows 用正斜線，路徑有空格須加引號）。
+
+> [!WARNING]
+> **⚠️ 致命盲點與重要警告**
+> 如果您的 `.claude/settings.local.json` 檔案中存在畸形或語法錯誤的 `Bash(...)` 規則（例如含有不當的雙引號或反斜線路徑，常見於 `/fewer-permission-prompts` 等自動化簡化授權的技能所產生的設定），**Claude Code 會在背景靜默跳過整個 settings 檔案**，導致您的 `statusLine` 配置被忽略且完全不執行，並且沒有任何錯誤提示。
+> 若發現狀態列無法正常顯示，請務必優先檢查 `.claude/settings.local.json` 的 JSON 語法是否完全正確。
+
+#### 4. Antigravity (AGY) Statusline 設定
+在 Antigravity 終端機環境中，同樣支援掛載自訂狀態列。
+請在全域設定 `~/.gemini/settings.json` 或最高優先級的 CLI 專屬設定 `~/.gemini/antigravity-cli/settings.json` 中配置 `statusLine`：
+
+```json
+{
+  "statusLine": {
+    "enabled": true,
+    "type": "command",
+    "command": "node C:\\Users\\<your_username>\\.gemini\\hooks\\statusline-quota.mjs"
+  }
+}
+```
+
+您可以在自訂的 `statusline-quota.mjs` Hook 腳本中呼叫 `node bin/statusline.mjs`，並將其通訊狀態併入 Antigravity 的底部彩色狀態列中。同時，請記得在 `~/.gemini/trusted_hooks.json` 中將該 Hook 腳本加入安全性信任清單。
+
+#### 5. setup-statusline Skill（快速安裝輔助）
+
+本專案附帶一個 Claude Code skill，可引導你逐步完成上述設定：
+
+**`~/.claude/skills/setup-statusline.md`**
+
+**作用**：
+- 逐步引導：前置條件確認 → settings.json 設定 → termKey 前綴驗證 → 測試輸出
+- 提醒 settings.local.json 畸形規則的靜默失效陷阱
+- 連結 [[cc-statusline-not-appearing]] 排查 skill（已壞才用）
+
+**安裝方式**：
+1. 複製 `skills/setup-statusline.md` 至 `~/.claude/skills/`
+2. CC 中輸入 `/setup-statusline` 即可觸發
+
+```bash
+cp skills/setup-statusline.md ~/.claude/skills/setup-statusline.md
+```
 
 ---
 
