@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "pic-agent-call": {
+    "agent-call": {
       "command": "node",
       "args": [
         "C:\\PIC\\AI tools\\claude-marketplace\\pic-agent-call\\bin\\server.mjs"

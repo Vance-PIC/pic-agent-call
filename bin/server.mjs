@@ -4,6 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { resolveMemoryPaths, initDatabase } from '../src/db.mjs';
 import * as memory from '../src/memory.mjs';
 import * as channel from '../src/channel.mjs';
@@ -204,10 +205,10 @@ server.tool('channel_ack',
 // ── Agent 身份管理 ────────────────────────────────────────────────────────────
 
 function resolveTermKey() {
-    const ccId = process.env.CLAUDE_CODE_SESSION_ID;
-    if (ccId) return `cc-${ccId.slice(0, 8)}`;
-    const agyId = process.env.ANTIGRAVITY_CONVERSATION_ID;
-    if (agyId) return `agy-${agyId.slice(0, 8)}`;
+    const sessionId = resolveSessionId();
+    if (sessionId.startsWith('cc-')) return `cc-${sessionId.slice(3, 11)}`;
+    if (sessionId.startsWith('agy-')) return `agy-${sessionId.slice(4, 12)}`;
+    if (sessionId.length === 36) return `agy-${sessionId.slice(0, 8)}`;
     return `ppid-${process.ppid}`;
 }
 
@@ -236,6 +237,8 @@ server.tool('register_agent',
                 conflict: true,
                 occupied_by_session: conflict.session_id,
                 current_role: conflict.role,
+                debug_sessionId: sessionId,
+                debug_homedir: os.homedir(),
                 message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。`,
             });
         }
