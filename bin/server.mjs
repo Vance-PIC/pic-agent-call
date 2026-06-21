@@ -208,7 +208,10 @@ function resolveTermKey() {
     const sessionId = resolveSessionId();
     if (sessionId.startsWith('cc-')) return `cc-${sessionId.slice(3, 11)}`;
     if (sessionId.startsWith('agy-')) return `agy-${sessionId.slice(4, 12)}`;
-    if (sessionId.length === 36) return `agy-${sessionId.slice(0, 8)}`;
+    if (sessionId.length === 36) {
+        if (process.env.CLAUDE_CODE_SESSION_ID) return `cc-${sessionId.slice(0, 8)}`;
+        return `agy-${sessionId.slice(0, 8)}`;
+    }
     return `ppid-${process.ppid}`;
 }
 
