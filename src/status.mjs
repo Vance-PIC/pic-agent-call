@@ -179,6 +179,18 @@ export function getAgentStatus(db, sessionId) {
 
     const { agent_id, role } = reg;
 
+    // heartbeat：更新自己的 last_seen
+    db.prepare(
+        `UPDATE agents SET last_seen = datetime('now','localtime'), updated_at = datetime('now','localtime') WHERE session_id = ?`
+    ).run(sessionId);
+
+    // 把超時的其他 agents 標為 offline
+    db.prepare(
+        `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+         WHERE session_id != ? AND status = 'active'
+           AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
+    ).run(sessionId);
+
     let row;
     if (role) {
         const pool = `${role}?`;
