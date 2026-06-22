@@ -25,7 +25,8 @@ export function resolveMemoryPaths(): { dbPath: string, jsonPath: string }
 // DB 初始化（建表、PRAGMA WAL、foreign_keys、自動遷移）
 export function initDatabase(dbPath: string, jsonPath: string): DatabaseSync
 
-// DB → JSON 快照原子同步（PID-unique temp file + rename）
+// DB → JSON 快照原子同步（v1.1.0 改為非同步防抖覆蓋）
+// 內部實作需防抖 (500ms~1000ms)，並使用非同步 I/O 避免阻塞主執行緒
 export function syncDbToJson(db: DatabaseSync, jsonPath: string): void
 
 // 指數退避重試（SQLITE_BUSY / database is locked）
@@ -97,9 +98,10 @@ export function searchNodes(
 
 ```js
 // 傳送訊息
+// ⚠️ v1.1.0 安全強化：移除 sender 參數。內部利用 resolveSessionId 獲取當前 sessionId
+// 並從 DB 查詢對應登記的 agent_id 作為 sender 寫入。若未註冊則拋出 Error。
 export function sendMessage(
   db: DatabaseSync,
-  sender: string,
   receiver: string,   // 具體名稱 | pool? | all
   message: string,
   priority?: number   // 1~10，預設 5
@@ -192,6 +194,7 @@ export function getTask(
 ```js
 // 解析當前 session_id
 // 優先序：CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → hostname-pid
+// ⚠️ v1.1.0 效能優化：支援在進程記憶體中快取解析出的會話 ID，避免重複的目錄掃描與磁碟 I/O
 export function resolveSessionId(): string
 
 // 以 session_id 查詢 agents 表

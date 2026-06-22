@@ -115,3 +115,22 @@ pic-agent-call/
 - 詳細函式簽名 → [api-spec.md](./api-spec.md)
 - DB 表結構 → [db-schema.md](./db-schema.md)
 - 錯誤碼定義 → [error-codes.md](./error-codes.md)
+
+---
+
+## 6. 架構優化與併發性能規範 (v1.1.0 重構規格)
+
+為了解決併發寫入鎖定、JSON 備份 I/O 阻塞、Session 掃描開銷及通道偽造問題，專案引進以下重構規格：
+
+1.  **全寫入 / 交易 withRetry 包裹**：
+    *   所有包含 `INSERT` / `UPDATE` / `DELETE` 動作的資料庫操作，必須全面包裹在 `withRetry` 指數退避重試邏輯中。
+    *   涉及多步驟的資料庫異動，必須使用 `BEGIN IMMEDIATE` 與 `COMMIT` 包裹為資料庫事務（Transaction），並將整個事務 block 包裹在 `withRetry` 內。
+2.  **JSON 快照同步異步防抖**：
+    *   將 `syncDbToJson` 重構為具備 **500ms 至 1000ms** 防抖的異步覆蓋機制。
+    *   採用 `promises.writeFile` 寫入臨時檔案，再以 `promises.rename` 原子覆蓋，避免阻塞事件循環。
+3.  **Session ID 記憶體快取**：
+    *   `resolveSessionId` 優先解析環境變數（如 `ANTIGRAVITY_CONVERSATION_ID` 或 `CLAUDE_CODE_SESSION_ID`），並將動態掃描目錄結果快取在進程記憶體中，防止重複硬碟 I/O。
+4.  **Channel 訊息 Sender 安全認證**：
+    *   `channel_send` 的 MCP schema 與核心 API **移除由前端傳入的 `sender` 參數**。
+    *   伺服器端收到發送請求後，自動利用 `resolveSessionId` 解析出當前 Session 並向資料庫查詢所登記的 `agent_id` 作為 `sender` 寫入。未註冊之會話將拋出 `401 Unauthorized` 錯誤。
+
