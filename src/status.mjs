@@ -106,9 +106,9 @@ export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
 }
 
 // Upsert agent registration
-// 若 agent_id 衝突（不同 session），呼叫者自行決定是否繼續
-// 回傳 { success, agent_id, role, session_id, previous?, orphans_notified? }
-export function registerAgent(db, sessionId, agentId, role) {
+// forced=true 時強制覆寫舊 session 的 agent_id 記錄
+// 回傳 { success, agent_id, role, session_id, forced?, previous?, orphans_notified? }
+export function registerAgent(db, sessionId, agentId, role, forced = false) {
     const existing = getRegistration(db, sessionId);
     const previousAgentId = existing?.agent_id || null;
     const previousRole = existing?.role || null;
@@ -120,7 +120,12 @@ export function registerAgent(db, sessionId, agentId, role) {
         orphansNotified = handleOrphanedMessages(db, previousAgentId, agentId);
     }
 
-    const now = `datetime('now','localtime')`;
+    if (forced) {
+        // 強制接管：先刪除舊 session 殘留記錄，再 upsert 當前 session
+        db.prepare(
+            `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
+        ).run(agentId, sessionId);
+    }
 
     if (existing) {
         // UPDATE existing session
@@ -131,9 +136,6 @@ export function registerAgent(db, sessionId, agentId, role) {
         ).run(agentId, role || null, sessionId);
     } else {
         // INSERT new registration
-        // agents 表以 agent_id 為 PRIMARY KEY，但我們希望以 session_id 為主鍵做 upsert
-        // 先嘗試 INSERT，若 agent_id 已存在（同 agent_id 不同 session）則會被 conflict check 擋掉
-        // 此函式呼叫前已由 findAgentIdConflict 確認無衝突
         db.prepare(
             `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
              VALUES (?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))
@@ -152,6 +154,10 @@ export function registerAgent(db, sessionId, agentId, role) {
         role: role || null,
         session_id: sessionId,
     };
+
+    if (forced) {
+        result.forced = true;
+    }
 
     if (previousAgentId !== null) {
         result.previous = { agent_id: previousAgentId, role: previousRole };

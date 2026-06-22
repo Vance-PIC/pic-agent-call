@@ -229,24 +229,25 @@ server.tool('register_agent',
     {
         agent_id: z.string().min(1).max(50).describe('代理人識別碼，例如 CC-PG1'),
         role: z.string().max(50).optional().describe('角色標籤，例如 PG、SA、DevOps'),
+        force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
     },
-    async ({ agent_id, role }) => {
+    async ({ agent_id, role, force }) => {
         const sessionId = resolveSessionId();
 
         // 檢查 agent_id 是否被其他 session 占用
         const conflict = findAgentIdConflict(db, agent_id, sessionId);
-        if (conflict) {
+        if (conflict && !force) {
             return textJson({
                 conflict: true,
                 occupied_by_session: conflict.session_id,
                 current_role: conflict.role,
                 debug_sessionId: sessionId,
                 debug_homedir: os.homedir(),
-                message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。`,
+                message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。若確定舊 session 已死，可用 force=true 強制接管。`,
             });
         }
 
-        const result = registerAgent(db, sessionId, agent_id, role);
+        const result = registerAgent(db, sessionId, agent_id, role, force && !!conflict);
 
         // 同步寫入本地快取（供 statusline hook 識別身分）
         const termKey = resolveTermKey();
