@@ -156,7 +156,7 @@ function _parseAgentIds(rawAgentId, sessionId) {
     const isAgy = sessionId && (process.env.ANTIGRAVITY_CONVERSATION_ID === sessionId);
     const prefix = isAgy ? 'AGY-' : (isCc ? 'CC-' : (process.env.CLAUDE_CODE_SESSION_ID ? 'CC-' : 'AGY-'));
 
-    const parts = rawAgentId.split(/[,、;\/\s]+/).map(s => s.trim()).filter(Boolean);
+    const parts = rawAgentId.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
     return parts.map(part => {
         const upper = part.toUpperCase();
         const hasPrefix = upper.startsWith('CC-') || upper.startsWith('AGY-');

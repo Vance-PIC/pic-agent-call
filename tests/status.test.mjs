@@ -566,6 +566,16 @@ describe('registerAgent() Spec 10 多角色', () => {
     expect(ids).toContain('CC-PDM');
     expect(ids).toContain('CC-SA');
   });
+
+  // 42. 全形逗號、加號、全形分號分隔均可解析
+  test('42. 全形逗號/加號/全形分號分隔多角色解析', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-sep42';
+    const r1 = registerAgent(db, 'sess-sep42', 'PJM，PDM', undefined);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    expect(r1.success).toBe(true);
+    expect(r1.registered_agents.map(r => r.agent_id)).toContain('CC-PJM');
+    expect(r1.registered_agents.map(r => r.agent_id)).toContain('CC-PDM');
+  });
 });
 
 // ── cleanExpiredAgentSessionCache() ──────────────────────────────────────────
