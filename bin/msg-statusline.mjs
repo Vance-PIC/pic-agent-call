@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// CC statusbar hook：查詢當前 agent 身份與未讀數，輸出一行
-// 策略：先嘗試 session ID 匹配，失敗則讀 agent-sessions/cc-*.json fallback
+// CC/AGY statusbar hook：查詢當前 agent 身份與未讀數，輸出一行
+// v1.1.0：多角色並列顯示，格式 ▶🔴1·CC-PG1  🟢0·CC-SA1
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from '../src/db.mjs';
-import { resolveSessionId, getRegistration, getRegistrationByAgentId, getAgentStatus, getAgentsByPlatformStatus } from '../src/status.mjs';
+import { resolveSessionId, getRegistrations, getRegistrationByAgentId, getAgentStatus } from '../src/status.mjs';
 
 let db, dbPath;
 try {
@@ -14,26 +14,26 @@ try {
     process.exit(0);
 }
 
-// 從 env var 判斷 caller：CC 傳 CLAUDE_CODE_SESSION_ID，AGY 傳 ANTIGRAVITY_CONVERSATION_ID
 const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
     : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
     : null;
 
 const sessionId = resolveSessionId(callerType);
-let reg = getRegistration(db, sessionId);
+let regs = getRegistrations(db, sessionId);
 
-// fallback：掃 agent-sessions/ 取最新檔，依 callerType 限制 prefix 避免跨 LLM 污染
-if (!reg) {
+const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
+const prefixes = callerType === 'cc' ? ['cc-']
+    : callerType === 'agy' ? ['agy-']
+    : ['cc-', 'agy-'];
+
+// fallback：掃 agent-sessions/ 取最新符合 callerType prefix 的快取檔
+let primaryAgentIdFromCache = null;
+if (!regs || regs.length === 0) {
     try {
-        const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
         if (fs.existsSync(sessionDir)) {
-            const prefixes = callerType === 'cc' ? ['cc-']
-                : callerType === 'agy' ? ['agy-']
-                : ['cc-', 'agy-'];
             const files = fs.readdirSync(sessionDir)
                 .filter(f => prefixes.some(p => f.startsWith(p)) && f.endsWith('.json'));
-            let newest = null;
-            let newestMtime = 0;
+            let newest = null, newestMtime = 0;
             for (const f of files) {
                 const fp = path.join(sessionDir, f);
                 const mt = fs.statSync(fp).mtimeMs;
@@ -42,39 +42,46 @@ if (!reg) {
             if (newest) {
                 const data = JSON.parse(fs.readFileSync(newest, 'utf8'));
                 if (data.agent_id) {
-                    reg = getRegistrationByAgentId(db, data.agent_id);
+                    const fallbackReg = getRegistrationByAgentId(db, data.agent_id);
+                    if (fallbackReg) {
+                        regs = getRegistrations(db, fallbackReg.session_id);
+                        primaryAgentIdFromCache = data.agent_id;
+                    }
                 }
             }
         }
     } catch (_) {}
 }
 
-if (!reg) {
+if (!regs || regs.length === 0) {
     process.stdout.write('NO AGENT\n');
-} else {
-    const status = getAgentStatus(db, reg.session_id);
-    const agentId = status?.agent_id ?? reg.agent_id;
-    const unread = status?.unread ?? 0;
-    const icon = unread > 0 ? '🔴' : '🟢';
-    const primary = `${icon}${unread}·${agentId}`;
-
-    // 多角色並列：查同平台其他 agent，只顯示有未讀的
-    const platformPrefix = callerType === 'cc' ? 'CC-'
-        : callerType === 'agy' ? 'AGY-'
-        : agentId.includes('-') ? agentId.split('-')[0] + '-' : null;
-
-    let parts = [primary];
-    if (platformPrefix) {
-        try {
-            const others = getAgentsByPlatformStatus(db, platformPrefix)
-                .filter(a => a.agent_id !== agentId && a.unread > 0);
-            for (const a of others) {
-                parts.push(`🔴${a.unread}·${a.agent_id}`);
-            }
-        } catch (_) {}
-    }
-
-    process.stdout.write(parts.join(' | ') + '\n');
+    process.exit(0);
 }
 
+// 若未從 fallback 讀出，嘗試從本 session 的快取讀 primary（最新修改時間的對應快取）
+if (!primaryAgentIdFromCache) {
+    try {
+        if (fs.existsSync(sessionDir)) {
+            const files = fs.readdirSync(sessionDir)
+                .filter(f => prefixes.some(p => f.startsWith(p)) && f.endsWith('.json'));
+            for (const f of files) {
+                const fp = path.join(sessionDir, f);
+                const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+                if (data.session_id === sessionId && data.agent_id) {
+                    primaryAgentIdFromCache = data.agent_id;
+                    break;
+                }
+            }
+        }
+    } catch (_) {}
+}
+
+const sid = regs[0].session_id;
+const status = getAgentStatus(db, sid, primaryAgentIdFromCache);
+if (!status) {
+    process.stdout.write('NO AGENT\n');
+    process.exit(0);
+}
+
+process.stdout.write(status.display + '\n');
 process.exit(0);

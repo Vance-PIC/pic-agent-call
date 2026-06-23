@@ -12,6 +12,7 @@ import * as tasks from '../src/tasks.mjs';
 import {
     resolveSessionId,
     getRegistration,
+    getRegistrations,
     findAgentIdConflict,
     registerAgent,
     getAgentStatus,
@@ -184,15 +185,19 @@ server.tool('channel_send',
 
 server.tool('channel_list_unread',
     '【channel】列出指定接收者的未讀訊息。自動釋放逾時 IN_PROGRESS（>15 分鐘）。',
-    { receiver: z.string() },
-    async (args) => textJson(channel.listUnread(db, args.receiver))
+    { receiver: z.string().optional() },
+    async (args) => {
+        const sessionId = resolveSessionId();
+        return textJson(channel.listUnread(db, args.receiver || null, sessionId));
+    }
 );
 
 server.tool('channel_claim',
     '【channel】原子搶鎖：將 UNREAD 訊息標記為 IN_PROGRESS。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const r = channel.claimMessage(db, args.message_id, args.agent_id);
+        const sessionId = resolveSessionId();
+        const r = channel.claimMessage(db, args.message_id, args.agent_id, sessionId);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -201,7 +206,8 @@ server.tool('channel_ack',
     '【channel】確認完成：將 IN_PROGRESS 訊息標記為 READ。只有搶鎖者才能 ACK。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const r = channel.ackMessage(db, args.message_id, args.agent_id);
+        const sessionId = resolveSessionId();
+        const r = channel.ackMessage(db, args.message_id, args.agent_id, sessionId);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -219,44 +225,69 @@ function resolveTermKey() {
     return `ppid-${process.ppid}`;
 }
 
-function writeAgentSessionCache(agentId, termKey) {
+// v1.1.0：快取格式加 agent_ids 陣列 + session_id（供多角色 ▶ 識別）
+function writeAgentSessionCache(agentId, agentIds, sessionId, termKey) {
     try {
         const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
         fs.mkdirSync(sessionDir, { recursive: true });
         const filePath = path.join(sessionDir, `${termKey}.json`);
-        fs.writeFileSync(filePath, JSON.stringify({ agent_id: agentId, term_key: termKey, ts: new Date().toISOString() }), 'utf8');
+        fs.writeFileSync(filePath, JSON.stringify({
+            agent_id: agentId,
+            agent_ids: agentIds,
+            session_id: sessionId,
+            term_key: termKey,
+            ts: new Date().toISOString(),
+        }), 'utf8');
         cleanExpiredAgentSessionCache(db, sessionDir);
     } catch (_) {}
+}
+
+// 從快取讀出 primary agent_id（當前活躍角色）
+function readPrimaryAgentIdFromCache(termKey) {
+    try {
+        const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
+        const filePath = path.join(sessionDir, `${termKey}.json`);
+        if (!fs.existsSync(filePath)) return null;
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return data.agent_id || null;
+    } catch (_) { return null; }
 }
 
 server.tool('register_agent',
     '【agent】登記或更新當前 AI 視窗的身份（agent_id + role）。session_id 自動從環境變數讀取。若 agent_id 已被其他 session 占用，回傳 conflict 資訊供 AI 詢問 user。換角色時自動處理孤兒訊息並通知原始發送者。',
     {
-        agent_id: z.string().min(1).max(50).describe('代理人識別碼，例如 CC-PG1'),
-        role: z.string().max(50).optional().describe('角色標籤，例如 PG、SA、DevOps'),
+        agent_id: z.string().min(1).max(200).describe('代理人識別碼，支援多角色（逗號/頓號分隔），例如 CC-PG1 或 PJM、PDM、SA'),
+        role: z.string().max(50).optional().describe('角色標籤，單角色時覆蓋自動推導結果'),
         force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
     },
     async ({ agent_id, role, force }) => {
         const sessionId = resolveSessionId();
 
-        // 檢查 agent_id 是否被其他 session 占用
-        const conflict = findAgentIdConflict(db, agent_id, sessionId);
-        if (conflict && !force) {
-            return textJson({
-                conflict: true,
-                occupied_by_session: conflict.session_id,
-                current_role: conflict.role,
-                debug_sessionId: sessionId,
-                debug_homedir: os.homedir(),
-                message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。若確定舊 session 已死，可用 force=true 強制接管。`,
-            });
+        // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
+        const isSingle = !agent_id.match(/[,、;\/]/);
+        if (isSingle) {
+            const conflict = findAgentIdConflict(db, agent_id, sessionId);
+            if (conflict && !force) {
+                return textJson({
+                    conflict: true,
+                    occupied_by_session: conflict.session_id,
+                    current_role: conflict.role,
+                    debug_sessionId: sessionId,
+                    debug_homedir: os.homedir(),
+                    message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。若確定舊 session 已死，可用 force=true 強制接管。`,
+                });
+            }
         }
 
-        const result = registerAgent(db, sessionId, agent_id, role, force && !!conflict);
+        const result = registerAgent(db, sessionId, agent_id, role, !!force);
+        if (!result.success) return textJson(result);
 
-        // 同步寫入本地快取（供 statusline hook 識別身分）
+        // 同步寫入本地快取（從 DB 查最新 session 聯集，確保 agent_ids 完整）
         const termKey = resolveTermKey();
-        writeAgentSessionCache(agent_id, termKey);
+        const primaryId = result.registered_agents[0].agent_id;
+        const allRegs = getRegistrations(db, sessionId);
+        const allIds = allRegs.map(r => r.agent_id);
+        writeAgentSessionCache(primaryId, allIds, sessionId, termKey);
 
         return textJson({ ...result, term_key: termKey });
     }
@@ -267,9 +298,9 @@ server.tool('agent_status',
     {},
     async () => {
         const sessionId = resolveSessionId();
-        const reg = getRegistration(db, sessionId);
+        const regs = getRegistrations(db, sessionId);
 
-        if (!reg) {
+        if (!regs || regs.length === 0) {
             return textJson({
                 registered: false,
                 session_id: sessionId,
@@ -277,7 +308,11 @@ server.tool('agent_status',
             });
         }
 
-        const status = getAgentStatus(db, sessionId);
+        // 從快取讀 primary agent_id（供 ▶ 標示）
+        const termKey = resolveTermKey();
+        const primaryAgentId = readPrimaryAgentIdFromCache(termKey);
+
+        const status = getAgentStatus(db, sessionId, primaryAgentId);
         return textJson({
             registered: true,
             ...status,

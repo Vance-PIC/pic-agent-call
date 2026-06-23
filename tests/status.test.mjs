@@ -13,7 +13,7 @@ import path from 'node:path';
 // ── import modules under test ─────────────────────────────────────────────────
 
 let initDatabase;
-let resolveSessionId, getRegistration, findAgentIdConflict;
+let resolveSessionId, getRegistration, getRegistrations, findAgentIdConflict;
 let registerAgent, handleOrphanedMessages, getAgentStatus;
 let cleanExpiredAgentSessionCache, _resetSessionIdCache;
 let getAgentsByPlatformStatus;
@@ -25,6 +25,7 @@ beforeAll(async () => {
   const statusMod = await import('../src/status.mjs');
   resolveSessionId              = statusMod.resolveSessionId;
   getRegistration               = statusMod.getRegistration;
+  getRegistrations              = statusMod.getRegistrations;
   findAgentIdConflict           = statusMod.findAgentIdConflict;
   registerAgent                 = statusMod.registerAgent;
   handleOrphanedMessages        = statusMod.handleOrphanedMessages;
@@ -203,64 +204,67 @@ describe('registerAgent()', () => {
   beforeEach(() => { db = makeDb(); });
   afterEach(() => { try { db.close(); } catch (_) {} });
 
-  // 9. 首次 register，回傳 success:true + agent_id + session_id
-  test('9. 首次 register 回傳 success:true + agent_id + session_id', () => {
+  // 9. 首次 register，回傳 success:true + registered_agents + session_id
+  test('9. 首次 register 回傳 success:true + registered_agents + session_id', () => {
     const result = registerAgent(db, 'sess-new', 'CC-PG1', 'PG');
 
     expect(result.success).toBe(true);
-    expect(result.agent_id).toBe('CC-PG1');
     expect(result.session_id).toBe('sess-new');
-    expect(result.role).toBe('PG');
-    // 首次不含 previous
-    expect(result.previous).toBeUndefined();
+    expect(Array.isArray(result.registered_agents)).toBe(true);
+    expect(result.registered_agents[0].agent_id).toBe('CC-PG1');
+    expect(result.registered_agents[0].role).toBe('PG');
   });
 
-  // 10. 同 session 再次呼叫（更新 role），不產生衝突
+  // 10. 同 session 再次呼叫同 agent_id 更新 role，回傳 success:true
   test('10. 同 session 再次呼叫更新 role，不產生衝突且回傳 success:true', () => {
     registerAgent(db, 'sess-update', 'CC-PG1', 'PG');
     const result = registerAgent(db, 'sess-update', 'CC-PG1', 'SA');
 
     expect(result.success).toBe(true);
-    expect(result.agent_id).toBe('CC-PG1');
-    expect(result.role).toBe('SA');
+    expect(result.registered_agents[0].role).toBe('SA');
     // 更新後 DB 中 role 應為 SA
-    const row = db.prepare('SELECT role FROM agents WHERE session_id = ?').get('sess-update');
+    const row = db.prepare('SELECT role FROM agents WHERE agent_id = ?').get('CC-PG1');
     expect(row.role).toBe('SA');
   });
 
-  // 11. 換 agent_id 時，舊 UNREAD 訊息標記為 ORPHANED
-  test('11. 換 agent_id 時，舊 UNREAD 訊息標記為 ORPHANED', () => {
-    // 先 register 舊 agent
-    registerAgent(db, 'sess-swap', 'OLD-AGENT', 'PG');
+  // 11. 同 session 並存多角色時，不觸發孤兒（Spec 10 新行為）
+  test('11. 同 session 並存多角色，不觸發孤兒訊息標記', () => {
+    // register 第一個角色
+    registerAgent(db, 'sess-multi', 'CC-PG1', 'PG');
 
-    // 插入一條給舊 agent 的 UNREAD 訊息
+    // 插入一條給第一個角色的 UNREAD 訊息
     insertChannelMsg(db, {
-      message_id: 'msg-orphan-001',
-      sender: 'OTHER-AGENT',
-      receiver: 'OLD-AGENT',
+      message_id: 'msg-no-orphan-001',
+      sender: 'OTHER',
+      receiver: 'CC-PG1',
     });
 
-    // 換 agent_id
-    registerAgent(db, 'sess-swap', 'NEW-AGENT', 'PG');
+    // 同 session 加入第二個角色（並存，不換角色）
+    registerAgent(db, 'sess-multi', 'CC-SA1', 'SA');
 
-    // 驗證舊訊息已標記 ORPHANED
+    // 舊訊息不應被標為 ORPHANED
     const row = db.prepare(
       `SELECT status FROM agent_collaboration_channel WHERE message_id = ?`
-    ).get('msg-orphan-001');
-    expect(row.status).toBe('ORPHANED');
+    ).get('msg-no-orphan-001');
+    expect(row.status).toBe('UNREAD');
   });
 
-  // 12. 換 agent_id 時，對 sender 發送 SYSTEM 通知
-  test('12. 換 agent_id 時，對 sender 發送 SYSTEM 通知', () => {
-    registerAgent(db, 'sess-notify', 'AGENT-A', 'PG');
+  // 12. forced=true 接管他 session 的 agent_id，觸發孤兒通知
+  test('12. forced=true 接管他 session 時，對 sender 發送 SYSTEM 通知', () => {
+    // 舊 session 登記 CC-AGENT-A（需與 _parseAgentIds 自動補前綴後相符）
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-AGENT-A', 'PG', 'sess-old', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+    ).run();
 
     insertChannelMsg(db, {
       message_id: 'msg-notify-001',
       sender: 'SENDER-X',
-      receiver: 'AGENT-A',
+      receiver: 'CC-AGENT-A',
     });
 
-    registerAgent(db, 'sess-notify', 'AGENT-B', 'PG');
+    // 新 session 強制接管 CC-AGENT-A（registerAgent 會自動補 CC- 前綴）
+    registerAgent(db, 'sess-new-owner', 'AGENT-A', 'PG', true);
 
     // 應有一條 SYSTEM → SENDER-X 的通知
     const notify = db.prepare(
@@ -270,8 +274,7 @@ describe('registerAgent()', () => {
     expect(notify).toBeDefined();
     const payload = JSON.parse(notify.message);
     expect(payload.type).toBe('ORPHAN_NOTICE');
-    expect(payload.original_receiver).toBe('AGENT-A');
-    expect(payload.new_agent_id).toBe('AGENT-B');
+    expect(payload.original_receiver).toBe('CC-AGENT-A');
   });
 });
 
@@ -318,21 +321,19 @@ describe('getAgentStatus()', () => {
     expect(result).toBeNull();
   });
 
-  // 16. 有 register，無未讀 → display 顯示 📨0（無 emoji）
-  test('16. 有 register，無未讀時 display 不含📨', () => {
+  // 16. 有 register，無未讀 → display 含 🟢0·agent_id
+  test('16. 有 register，無未讀時 display 含 🟢0', () => {
     registerAgent(db, 'sess-status-1', 'CC-PG1', 'PG');
 
     const result = getAgentStatus(db, 'sess-status-1');
 
     expect(result).not.toBeNull();
     expect(result.unread).toBe(0);
-    // 無未讀時 display 不含 📨
-    expect(result.display).not.toContain('📨');
-    expect(result.display).toContain('CC-PG1');
+    expect(result.display).toContain('🟢0·CC-PG1');
   });
 
-  // 17. 有 register，有未讀 → display 顯示正確數量
-  test('17. 有 register，有未讀時 display 顯示正確數量', () => {
+  // 17. 有 register，有未讀 → display 含 🔴N·agent_id
+  test('17. 有 register，有未讀時 display 含 🔴N', () => {
     registerAgent(db, 'sess-status-2', 'CC-SA1', 'SA');
 
     insertChannelMsg(db, { message_id: 'msg-s-001', sender: 'OTHER', receiver: 'CC-SA1' });
@@ -341,11 +342,11 @@ describe('getAgentStatus()', () => {
     const result = getAgentStatus(db, 'sess-status-2');
 
     expect(result.unread).toBe(2);
-    expect(result.display).toContain('📨2');
+    expect(result.display).toContain('🔴2·CC-SA1');
   });
 
-  // 18. display 格式為 `[agent_id|role] 📨N`
-  test('18. display 格式符合 [agent_id|role] 📨N', () => {
+  // 18. display 格式為 `▶🔴N·agent_id`（單角色，primaryAgentId=null 用首筆）
+  test('18. display 格式符合 ▶🔴N·agent_id', () => {
     registerAgent(db, 'sess-status-3', 'CC-PG2', 'PG');
 
     insertChannelMsg(db, { message_id: 'msg-fmt-001', sender: 'X', receiver: 'CC-PG2' });
@@ -354,16 +355,16 @@ describe('getAgentStatus()', () => {
 
     const result = getAgentStatus(db, 'sess-status-3');
 
-    // 期望格式：[CC-PG2|PG] 📨3
-    expect(result.display).toBe('[CC-PG2|PG] 📨3');
+    // 格式：▶🔴3·CC-PG2（單角色，唯一角色為 primary）
+    expect(result.display).toBe('▶🔴3·CC-PG2');
   });
 
-  // 19. 廣播訊息（receiver='all'）計入 unread
-  test('19. receiver=all 廣播訊息計入 unread', () => {
+  // 19. any 訊息計入 unread
+  test('19. receiver=any 訊息計入 unread', () => {
     registerAgent(db, 'sess-status-4', 'CC-PG3', 'PG');
 
-    insertChannelMsg(db, { message_id: 'msg-all-001', sender: 'SYS', receiver: 'all' });
-    insertChannelMsg(db, { message_id: 'msg-all-002', sender: 'SYS', receiver: 'CC-PG3' });
+    insertChannelMsg(db, { message_id: 'msg-any-001', sender: 'SYS', receiver: 'any' });
+    insertChannelMsg(db, { message_id: 'msg-any-002', sender: 'SYS', receiver: 'CC-PG3' });
 
     const result = getAgentStatus(db, 'sess-status-4');
 
@@ -376,19 +377,19 @@ describe('getAgentStatus()', () => {
 
     insertChannelMsg(db, { message_id: 'msg-pool-001', sender: 'SA', receiver: 'PG?' });
     insertChannelMsg(db, { message_id: 'msg-pool-002', sender: 'SA', receiver: 'CC-PG4' });
-    insertChannelMsg(db, { message_id: 'msg-pool-003', sender: 'SA', receiver: 'all' });
+    insertChannelMsg(db, { message_id: 'msg-pool-003', sender: 'SA', receiver: 'any' });
 
     const result = getAgentStatus(db, 'sess-status-5');
 
     expect(result.unread).toBe(3);
   });
 
-  // 21. 無 role 時只查個人 + all，不查 pool
+  // 21. 無 role 時只查個人 + any，不查 pool
   test('21. role=null 時不查 pool', () => {
     registerAgent(db, 'sess-status-6', 'CC-ANON', null);
 
     insertChannelMsg(db, { message_id: 'msg-anon-001', sender: 'X', receiver: 'CC-ANON' });
-    insertChannelMsg(db, { message_id: 'msg-anon-002', sender: 'X', receiver: 'all' });
+    insertChannelMsg(db, { message_id: 'msg-anon-002', sender: 'X', receiver: 'any' });
     insertChannelMsg(db, { message_id: 'msg-anon-003', sender: 'X', receiver: 'PG?' }); // 不應計入
 
     const result = getAgentStatus(db, 'sess-status-6');
@@ -453,6 +454,117 @@ describe('getAgentsByPlatformStatus()', () => {
     const result = getAgentsByPlatformStatus(db, 'CC-');
     const found = result.find(a => a.agent_id === 'AGY-SA1');
     expect(found).toBeUndefined();
+  });
+});
+
+// ── getRegistrations() (Spec 10) ─────────────────────────────────────────────
+
+describe('getRegistrations()', () => {
+  let db;
+
+  beforeEach(() => { db = makeDb(); });
+  afterEach(() => { try { db.close(); } catch (_) {} });
+
+  // 35. 無記錄回傳空陣列
+  test('35. 無記錄時回傳空陣列', () => {
+    const result = getRegistrations(db, 'sess-none');
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(0);
+  });
+
+  // 36. 單角色 session 回傳 1 筆
+  test('36. 單角色 session 回傳 1 筆', () => {
+    registerAgent(db, 'sess-single', 'CC-PG1', 'PG');
+    const result = getRegistrations(db, 'sess-single');
+    expect(result.length).toBe(1);
+    expect(result[0].agent_id).toBe('CC-PG1');
+    expect(result[0].role).toBe('PG');
+  });
+
+  // 37. 多角色 session 回傳多筆
+  test('37. 多角色 session 回傳多筆（順序按 created_at ASC）', () => {
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-PG1', 'PG', 'sess-multi', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+    ).run();
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-SA1', 'SA', 'sess-multi', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+    ).run();
+    const result = getRegistrations(db, 'sess-multi');
+    expect(result.length).toBe(2);
+    const ids = result.map(r => r.agent_id);
+    expect(ids).toContain('CC-PG1');
+    expect(ids).toContain('CC-SA1');
+  });
+});
+
+// ── registerAgent() Spec 10 多角色 ───────────────────────────────────────────
+
+describe('registerAgent() Spec 10 多角色', () => {
+  let db;
+
+  beforeEach(() => { db = makeDb(); });
+  afterEach(() => { try { db.close(); } catch (_) {} });
+
+  // 38. 逗號分隔多角色 → 多筆 DB 記錄
+  test('38. 逗號分隔多角色一次 register 多筆', () => {
+    // 使用 AGENT_SESSION_ID 模擬 CC session
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-multi-reg';
+    const result = registerAgent(db, 'sess-multi-reg', 'CC-PG1,CC-SA1', undefined);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+
+    expect(result.success).toBe(true);
+    expect(result.registered_agents.length).toBe(2);
+    const regs = getRegistrations(db, 'sess-multi-reg');
+    expect(regs.length).toBe(2);
+  });
+
+  // 39. 無前綴角色自動補 CC- 前綴
+  test('39. 無前綴角色根據 CC session 自動補 CC-', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-prefix-cc';
+    const result = registerAgent(db, 'sess-prefix-cc', 'PG1', undefined);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+
+    expect(result.success).toBe(true);
+    const aid = result.registered_agents[0].agent_id;
+    expect(aid).toBe('CC-PG1');
+  });
+
+  // 40. 多角色 display 顯示 ▶ 前綴於第一筆
+  test('40. 多角色 getAgentStatus display 多角色並列', () => {
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-PG1', 'PG', 'sess-disp', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+    ).run();
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-SA1', 'SA', 'sess-disp', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+    ).run();
+
+    insertChannelMsg(db, { message_id: 'msg-d-001', sender: 'X', receiver: 'CC-SA1' });
+
+    const result = getAgentStatus(db, 'sess-disp', 'CC-PG1');
+
+    // ▶ 在 CC-PG1；CC-SA1 有 1 unread
+    expect(result.display).toContain('▶🟢0·CC-PG1');
+    expect(result.display).toContain('🔴1·CC-SA1');
+    expect(result.display).toContain('  '); // 兩空格分隔
+    expect(result.registered_agents.length).toBe(2);
+  });
+
+  // 41. 頓號分隔多角色解析正確
+  test('41. 頓號分隔多角色解析', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-dun';
+    const result = registerAgent(db, 'sess-dun', 'PJM、PDM、SA', undefined);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+
+    expect(result.success).toBe(true);
+    expect(result.registered_agents.length).toBe(3);
+    const ids = result.registered_agents.map(r => r.agent_id);
+    expect(ids).toContain('CC-PJM');
+    expect(ids).toContain('CC-PDM');
+    expect(ids).toContain('CC-SA');
   });
 });
 

@@ -135,7 +135,9 @@ export function initDatabase(dbPath, jsonPath) {
     ]) {
         try { db.exec(sql); } catch (_) {}
     }
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
+    // v1.1.0 多角色：session_id 改非唯一索引
+    try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_id`); } catch (_) {}
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {

@@ -91,28 +91,35 @@ export interface Message {
 
 export function sendMessage(
   db: DatabaseSync,
-  receiver: string,
+  receiver: string,   // 具體名稱 | pool? | 'any' | 'all'
   message: string,
   sender: string,
   sessionId?: string,
   priority?: number
-): Promise<{ message_id: string; status: 'UNREAD' }>;
+): Promise<
+  | { message_id: string; status: 'UNREAD' }
+  | { message_id: string; status: 'UNREAD'; count: number; message_ids: string[] }
+  | { message_id: null; status: 'NO_ACTIVE_RECEIVERS'; count: 0 }
+>;
 
 export function listUnread(
   db: DatabaseSync,
-  receiver: string
+  receiver: string | null,
+  sessionId?: string
 ): { messages: Message[]; count: number };
 
 export function claimMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string
+  agent_id: string,
+  sessionId?: string
 ): { success: true; message_id: string } | { success: false; reason: string };
 
 export function ackMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string
+  agent_id: string,
+  sessionId?: string
 ): { success: true; message_id: string } | { success: false; reason: string };
 
 // ── src/tasks.mjs ─────────────────────────────────────────────────────────────
@@ -192,6 +199,16 @@ export function getRegistration(
   sessionId: string
 ): { agent_id: string; role: string; session_id: string } | null;
 
+export function getRegistrations(
+  db: DatabaseSync,
+  sessionId: string
+): Array<{ agent_id: string; role: string; session_id: string }>;
+
+export function getRegistrationByAgentId(
+  db: DatabaseSync,
+  agentId: string
+): { agent_id: string; role: string; session_id: string } | null;
+
 export function findAgentIdConflict(
   db: DatabaseSync,
   agentId: string,
@@ -210,12 +227,21 @@ export function registerAgent(
   agentId: string,
   role?: string,
   forced?: boolean
-): { success: true; agent_id: string; role: string | null; session_id: string; forced?: boolean; previous?: { agent_id: string; role: string | null }; orphans_notified?: number };
+):
+  | { success: true; registered_agents: Array<{ agent_id: string; role: string | null }>; session_id: string; forced?: boolean; orphans_notified?: number }
+  | { success: false; reason: string; conflict?: { agent_id: string; session_id: string; role: string } };
 
 export function getAgentStatus(
   db: DatabaseSync,
-  sessionId: string
-): { agent_id: string; role: string | null; unread: number; display: string } | null;
+  sessionId: string,
+  primaryAgentId?: string | null
+): {
+  agent_id: string;
+  role: string | null;
+  unread: number;
+  display: string;
+  registered_agents: Array<{ agent_id: string; role: string | null; unread: number }>;
+} | null;
 
 export function getAgentsByPlatformStatus(
   db: DatabaseSync,
