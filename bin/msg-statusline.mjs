@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // CC/AGY statusbar hook：查詢當前 agent 身份與未讀數，輸出一行
 // v1.1.0：多角色並列顯示，格式 ▶🔴1·CC-PG1  🟢0·CC-SA1
+// v1.1.1：直接以 session ID 查 DB，禁止掃描 agent-sessions/ fallback
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from '../src/db.mjs';
-import { resolveSessionId, getRegistrations, getRegistrationByAgentId, getAgentStatus } from '../src/status.mjs';
+import { resolveSessionId, getRegistrations, getAgentStatus } from '../src/status.mjs';
+
+function exitNoAgent() { process.stdout.write('NO AGENT\n'); process.exit(0); }
 
 let db, dbPath;
 try {
     ({ db, dbPath } = setup());
 } catch (_) {
-    process.stdout.write('NO AGENT\n');
-    process.exit(0);
+    exitNoAgent();
 }
 
 const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
@@ -19,68 +21,29 @@ const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
     : null;
 
 const sessionId = resolveSessionId(callerType);
-let regs = getRegistrations(db, sessionId);
+const regs = getRegistrations(db, sessionId);
 
-const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
-const prefixes = callerType === 'cc' ? ['cc-']
-    : callerType === 'agy' ? ['agy-']
-    : ['cc-', 'agy-'];
-
-// fallback：掃 agent-sessions/ 取最新符合 callerType prefix 的快取檔
-let primaryAgentIdFromCache = null;
 if (!regs || regs.length === 0) {
+    exitNoAgent();
+}
+
+// 從自己的 term_key.json 定點讀主身份（不掃最新，避免跨 terminal 污染）
+let primaryAgentId = null;
+if (callerType) {
     try {
-        if (fs.existsSync(sessionDir)) {
-            const files = fs.readdirSync(sessionDir)
-                .filter(f => prefixes.some(p => f.startsWith(p)) && f.endsWith('.json'));
-            let newest = null, newestMtime = 0;
-            for (const f of files) {
-                const fp = path.join(sessionDir, f);
-                const mt = fs.statSync(fp).mtimeMs;
-                if (mt > newestMtime) { newestMtime = mt; newest = fp; }
-            }
-            if (newest) {
-                const data = JSON.parse(fs.readFileSync(newest, 'utf8'));
-                if (data.agent_id) {
-                    const fallbackReg = getRegistrationByAgentId(db, data.agent_id);
-                    if (fallbackReg) {
-                        regs = getRegistrations(db, fallbackReg.session_id);
-                        primaryAgentIdFromCache = data.agent_id;
-                    }
-                }
-            }
+        const prefix = callerType === 'cc' ? 'cc-' : 'agy-';
+        const termKey = `${prefix}${sessionId.substring(0, 8)}`;
+        const cacheFile = path.join(path.dirname(dbPath), 'agent-sessions', `${termKey}.json`);
+        if (fs.existsSync(cacheFile)) {
+            const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+            if (data.agent_id) primaryAgentId = data.agent_id;
         }
     } catch (_) {}
 }
 
-if (!regs || regs.length === 0) {
-    process.stdout.write('NO AGENT\n');
-    process.exit(0);
-}
-
-// 若未從 fallback 讀出，嘗試從本 session 的快取讀 primary（最新修改時間的對應快取）
-if (!primaryAgentIdFromCache) {
-    try {
-        if (fs.existsSync(sessionDir)) {
-            const files = fs.readdirSync(sessionDir)
-                .filter(f => prefixes.some(p => f.startsWith(p)) && f.endsWith('.json'));
-            for (const f of files) {
-                const fp = path.join(sessionDir, f);
-                const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-                if (data.session_id === sessionId && data.agent_id) {
-                    primaryAgentIdFromCache = data.agent_id;
-                    break;
-                }
-            }
-        }
-    } catch (_) {}
-}
-
-const sid = regs[0].session_id;
-const status = getAgentStatus(db, sid, primaryAgentIdFromCache);
+const status = getAgentStatus(db, sessionId, primaryAgentId);
 if (!status) {
-    process.stdout.write('NO AGENT\n');
-    process.exit(0);
+    exitNoAgent();
 }
 
 process.stdout.write(status.display + '\n');

@@ -24,7 +24,7 @@ process.stdin.on('end', () => {
     const quotaScript = path.join(homedir(), '.gemini', 'antigravity-cli', 'plugins', 'antigravity-cli-statusline', 'scripts', 'statusline-quota.mjs');
     if (existsSync(quotaScript)) {
       const out = execFileSync(process.execPath, [quotaScript], { input, encoding: 'utf8', timeout: TIMEOUT_MS });
-      quotaLines = out.replace(/\n$/, '').split('\n');
+      quotaLines = out.trimEnd().split('\n');
     }
   } catch (e) {
     process.stderr.write(`[statusline-wrapper] quota error: ${e.message}\n`);
@@ -38,27 +38,24 @@ process.stdin.on('end', () => {
   let agentTag = '';
   if (existsSync(bin)) {
     try {
+      const dbCandidate = cwd ? path.join(cwd, '.memory', 'memory-graph.db') : '';
+      const memoryDbPath = dbCandidate && existsSync(dbCandidate) ? dbCandidate : (process.env.MEMORY_DB_PATH || '');
       const out = execFileSync(process.execPath, [bin], {
         input,
         encoding: 'utf8',
         cwd: cwd || undefined,
         timeout: TIMEOUT_MS,
-        env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: convId },
+        env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: convId, MEMORY_DB_PATH: memoryDbPath },
       });
+      const isValidAgentTag = t => t && t !== 'NO AGENT' && !t.includes('[未登記]') && !t.includes('[DB ERR]');
       const trimmed = out.trim();
-      if (trimmed && trimmed !== 'NO AGENT' && !trimmed.includes('[未登記]') && !trimmed.includes('[DB ERR]')) {
-        agentTag = trimmed;
-      }
+      if (isValidAgentTag(trimmed)) { agentTag = trimmed; }
     } catch (e) {
       process.stderr.write(`[statusline-wrapper] agent error: ${e.message}\n`);
     }
   }
 
   // 3. 輸出：quota 各行原樣輸出，agent tag 獨立一行
-  for (const line of quotaLines) {
-    process.stdout.write(line + '\n');
-  }
-  if (agentTag) {
-    process.stdout.write(agentTag + '\n');
-  }
+  if (quotaLines.length) process.stdout.write(quotaLines.join('\n') + '\n');
+  if (agentTag) process.stdout.write(agentTag + '\n');
 });

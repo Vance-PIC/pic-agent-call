@@ -98,11 +98,15 @@ export function searchNodes(
 
 ```js
 // 傳送訊息
-// ⚠️ v1.1.0 安全強化：MCP 工具層移除 sender 參數以防偽造。
-// sendMessage API 調整為接收 sessionId，並在內部驗證 sender 的註冊合法性（SYSTEM 豁免）。
+// ⚠️ v1.1.0 安全與廣播強化：
+// - MCP 工具層移除 sender 參數以防偽造。
+// - sendMessage 調整為接收 sessionId，並在內部驗證 sender 是否與該 sessionId 對應的活躍角色（即本地快取 agent_id）吻合（SYSTEM 豁免）。
+// - 支援廣播與任意信箱類型：
+//   - 若 receiver === 'all'，自動複製訊息並廣播分發給當前所有活躍狀態的 agent（status = 'active'，排除 sender 本身），各自寫入 receiver = 'agent_id' 的獨立記錄。
+//   - 若 receiver === 'any'，直接寫入單筆 receiver = 'any' 記錄，採先搶先得機制。
 export function sendMessage(
   db: DatabaseSync,
-  receiver: string,   // 具體名稱 | pool? | all
+  receiver: string,   // 具體名稱 | pool? | any | all
   message: string,
   sender: string,
   sessionId: string,
@@ -110,24 +114,35 @@ export function sendMessage(
 ): { message_id: string, status: 'UNREAD' }
 
 // 列出未讀（自動釋放 IN_PROGRESS > 15 分鐘 → UNREAD）
+// ⚠️ v1.1.0 安全強化：執行橫向越權檢驗。
+// - 若指定 receiver，該 receiver 必須為當前平台連線之本地快取 agent_id（當前活躍角色）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
+// - 若 receiver 未指定或為 'all'，則自動列出該 sessionId 所綁定之所有活躍角色之未讀訊息的聯集。
 export function listUnread(
   db: DatabaseSync,
-  receiver: string
+  receiver: string | null,
+  sessionId: string
 ): { messages: Message[], count: number }
 
 // 原子搶鎖（BEGIN IMMEDIATE）
+// ⚠️ v1.1.0 安全強化：嚴格執行當前活躍身份校驗。
+// - 操作者 agent_id 必須與該 sessionId 當前活躍角色（即本地快取 agent_id）完全吻合，否則拒絕。
+// - 訊息的接收者必須為該 agent_id（或其 role?、或 'any'），否則拒絕操作。
 export function claimMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string
+  agent_id: string,
+  sessionId: string
 ): { success: true, message_id: string }
  | { success: false, reason: string }
 
 // ACK 確認完成（lock_owner 須吻合）
+// ⚠️ v1.1.0 安全強化：嚴格執行當前活躍身份與搶鎖者吻合校驗。
+// - 操作者 agent_id 必須與該 sessionId 當前活躍角色（即本地快取 agent_id）完全吻合，且必須為原始搶鎖者，否則拒絕。
 export function ackMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string
+  agent_id: string,
+  sessionId: string
 ): { success: true, message_id: string }
  | { success: false, reason: string }
 ```
@@ -199,10 +214,16 @@ export function getTask(
 // ⚠️ v1.1.0 效能優化：支援在進程記憶體中快取解析出的會話 ID，避免重複的目錄掃描與磁碟 I/O
 export function resolveSessionId(): string
 
-// 以 session_id 查詢 agents 表
-export function getRegistration(
+// 以 session_id 查詢 agents 表中所有已註冊的活跃角色
+export function getRegistrations(
   db: DatabaseSync,
   sessionId: string
+): Array<{ agent_id: string, role: string, session_id: string }>
+
+// 用 agent_id 查詢 registration（給 statusline fallback 用）
+export function getRegistrationByAgentId(
+  db: DatabaseSync,
+  agentId: string
 ): { agent_id: string, role: string, session_id: string } | null
 
 // 偵測 agent_id 被其他 session 占用
@@ -214,7 +235,7 @@ export function findAgentIdConflict(
 
 // 換角色時處理孤兒訊息：
 // 1. 找舊 agent_id 所有 UNREAD 訊息
-// 2. 對每個唯一 sender 發 SYSTEM channel 通知
+// 2. 對每個傳送者發 SYSTEM channel 通知
 // 3. 將孤兒訊息標記為 ORPHANED
 // 回傳孤兒訊息數量
 export function handleOrphanedMessages(
@@ -223,29 +244,43 @@ export function handleOrphanedMessages(
   newAgentId: string
 ): number
 
-// Upsert agent registration（以 session_id 為 key）
-// 換 agent_id 時自動觸發孤兒訊息處理
+// Upsert agent registration
+// ⚠️ v1.1.0 支援多重角色註冊與平台前綴自動補全：
+// - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串（如 agentId = "PJM/PDM/SA"）。
+// - 當 agentId 內含上述分隔符號時，系統內部必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）正確分割並提取多個角色名稱。
+// - 平台前綴補全：若提取出的角色代碼不含當前平台前綴（"AGY-" 或 "CC-"），應根據當前 session_id 自動補全前綴（如 "PJM" 補全為 "AGY-PJM"），並自動將該角色（如 "PJM"）作為該 row 的 role。
+// - 在 DB 中，不再以 session_id 為 UNIQUE key 做覆寫，而是以 agent_id 作為 PRIMARY KEY 進行 upsert。
+// - 若 role 未單獨傳入，預設從拆分後的 agent_id 去除平台前綴後填入（例如 AGY-PJM 的 role 為 PJM）。
+// - forced=true 時強制接管：僅更新已被其他 session 占用的 agent_id 的綁定，不影響該舊 session 的其他角色。同時必須找出被搶角色原本所屬的舊 session 並同步修正其快取 JSON 檔中的活躍列表與主身份（若舊 session 被接管後已無活躍角色，則直接將其快取檔物理刪除），以防越權與狀態不一致。
+// - 回傳註冊結果清單或主身份資訊。
 export function registerAgent(
   db: DatabaseSync,
   sessionId: string,
   agentId: string,
-  role?: string
-): { success: true, agent_id, role, session_id, previous?: string, orphans_notified?: number }
+  role?: string,
+  forced?: boolean
+): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, orphans_notified?: number }
  | { success: false, reason: string }
 
 // 查詢 agent 狀態（給 statusline 用）
-// display 格式：[CC-PG1|PG] 📨3
-// unread 計算 SQL 條件：
-//   status = 'UNREAD' AND (receiver = agent_id OR receiver = 'all' OR receiver = pool)
-//   pool = role + '?'（e.g. agent_id='CC-PG1', role='PG' → pool='PG?'）
-//   role 為 null 時只查 agent_id 與 'all'
+// - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：主身份（當前活躍角色）固定排在首位且其前置加上 ▶ 標示，其餘角色依序並列（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
+// - unread 為該 sessionId 下所有活躍角色未讀數之總和。
+// - registered_agents 回傳該 session 登記的所有活躍角色資訊。
 export function getAgentStatus(
   db: DatabaseSync,
   sessionId: string
-): { agent_id: string, role: string, unread: number, display: string } | null
+): {
+  agent_id: string, // 首選/主角色
+  role: string | null,
+  unread: number,
+  display: string,
+  registered_agents: Array<{ agent_id: string, role: string | null, unread: number }>
+} | null
 
 // 🧹 v1.1.0 快取清理：自動清理 .memory/agent-sessions/ 目錄下的過期 JSON 檔案
-// 對各平台（cc- / agy-）保留最新修改時間的一個 fallback 檔案，清理其餘孤兒與超期檔案
+// 對各平台（cc- / agy-）保留最新修改時間的一個 fallback 檔案，其餘檔案依據聚合對比標準進行清理：
+// - 孤兒檔案（DB 無對應角色）且 mtime > 5 分鐘，一律刪除。
+// - 關聯的所有角色均為 offline 且 last_seen > 24 小時，一律刪除。
 export function cleanExpiredAgentSessionCache(
   db: DatabaseSync,
   sessionDir: string

@@ -41,18 +41,22 @@
   - **步驟**：在 `.memory/agent-sessions/` 下建立多個模擬快取 json 檔案：
     1. 平台最新的 `cc-` 和 `agy-` 檔案（其 mtime 最新）。
     2. 修改時間超過 7 天的極舊檔案。
-    3. DB 中無 session 紀錄的孤兒檔案（建立時間大於 5 分鐘與小於 5 分鐘者各一）。
+    3. DB 中無 session 紀錄 of 孤兒檔案（建立時間大於 5 分鐘與小於 5 分鐘者各一）。
     4. DB 中 session 狀態為 offline 且 last_seen 已離線大於 24 小時的檔案。
     - 呼叫 `register_agent` 觸發清理。
   - **期望**：
     1. 最新 `cc-` 和 `agy-` 快取檔案完好保留（受保護）。
     2. 超過 7 天的快取、DB 孤兒（且 >5分鐘者）以及離線 >24小時的快取被物理刪除。
     3. 剛建立未滿 5 分鐘 of DB 孤兒快取庫存保留（防範併發時間差誤殺）。
+- [ ] **TSK-QA-009：Channel 訊息橫向越權防禦驗收 (方案 D/I)**
+  - **步驟**：使用 Session A 的連線去呼叫 `channel_list_unread`、`channel_claim` 或 `channel_ack` 操作寄給 Session B（已註冊為其他 Agent）的訊息。
+  - **期望**：API 與 MCP 核心層攔截此越權請求，拒絕操作並拋出 `403 Forbidden` 安全性錯誤。
 
 ## 3. 品質門禁與流程驗證 (Quality & Process)
-- [ ] **TSK-QA-009：AI 動作前訊息稽核門禁驗收**
+- [ ] **TSK-QA-010：AI 動作前訊息稽核門禁驗收**
   - **步驟**：在有未讀訊息時，嘗試要求 AI 執行寫入動作。
   - **期望**：AI 能偵測到 `unread > 0` 並拉起防守手煞車，優先 claim/read 訊息，直到 unread 為 0 才繼續執行寫入。
+
 
 ---
 *產出日期：2026-06-23*
