@@ -282,6 +282,31 @@ server.tool('register_agent',
         const result = registerAgent(db, sessionId, agent_id, role, !!force);
         if (!result.success) return textJson(result);
 
+        // force 接管：同步更新被接管的舊 session cache（移除被搶走的 agent_id）
+        if (force && result.registered_agents) {
+            const takenIds = result.registered_agents.map(r => r.agent_id);
+            const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
+            try {
+                if (fs.existsSync(sessionDir)) {
+                    for (const f of fs.readdirSync(sessionDir).filter(f => f.endsWith('.json'))) {
+                        const fp = path.join(sessionDir, f);
+                        let cacheData;
+                        try { cacheData = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (_) { continue; }
+                        if (cacheData.session_id === sessionId) continue; // 跳過自己
+                        const oldIds = Array.isArray(cacheData.agent_ids) ? cacheData.agent_ids : [cacheData.agent_id].filter(Boolean);
+                        const remaining = oldIds.filter(id => !takenIds.includes(id));
+                        if (remaining.length === 0) {
+                            fs.unlinkSync(fp); // 舊 session 已無任何角色，刪檔
+                        } else if (remaining.length !== oldIds.length) {
+                            // 更新舊 cache，主身份改為第一個剩餘角色
+                            const newPrimary = remaining.includes(cacheData.agent_id) ? cacheData.agent_id : remaining[0];
+                            fs.writeFileSync(fp, JSON.stringify({ ...cacheData, agent_id: newPrimary, agent_ids: remaining }), 'utf8');
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
         // 同步寫入本地快取（從 DB 查最新 session 聯集，確保 agent_ids 完整）
         const termKey = resolveTermKey();
         const primaryId = result.registered_agents[0].agent_id;

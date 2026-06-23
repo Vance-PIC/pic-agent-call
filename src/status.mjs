@@ -363,11 +363,18 @@ export function cleanExpiredAgentSessionCache(db, sessionDir) {
             // 條件一：超過 7 天
             if (age > MS_7D) { fs.unlinkSync(fp); continue; }
 
-            // 取 term_key（檔名去 .json）查 DB
+            // 讀 cache 檔取 session_id，再查 DB 是否有任何活躍角色
             const termKey = f.slice(0, -5);
-            const dbRow = db.prepare(
-                `SELECT status, last_seen FROM agents WHERE term_key = ?`
-            ).get(termKey);
+            let cacheSessionId = null;
+            try {
+                const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+                cacheSessionId = data.session_id || null;
+            } catch (_) {}
+
+            // 用 session_id 查（多角色並存時 term_key 可能不在 DB agents 表）
+            const dbRow = cacheSessionId
+                ? db.prepare(`SELECT status, last_seen FROM agents WHERE session_id = ? ORDER BY last_seen DESC LIMIT 1`).get(cacheSessionId)
+                : db.prepare(`SELECT status, last_seen FROM agents WHERE term_key = ?`).get(termKey);
 
             // 條件二：DB 無紀錄（孤兒）且超過 5 分鐘
             if (!dbRow && age > MS_5M) { fs.unlinkSync(fp); continue; }
