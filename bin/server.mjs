@@ -15,6 +15,7 @@ import {
     findAgentIdConflict,
     registerAgent,
     getAgentStatus,
+    cleanExpiredAgentSessionCache,
 } from '../src/status.mjs';
 
 const { dbPath, jsonPath } = resolveMemoryPaths();
@@ -221,6 +222,7 @@ function writeAgentSessionCache(agentId, termKey) {
         fs.mkdirSync(sessionDir, { recursive: true });
         const filePath = path.join(sessionDir, `${termKey}.json`);
         fs.writeFileSync(filePath, JSON.stringify({ agent_id: agentId, term_key: termKey, ts: new Date().toISOString() }), 'utf8');
+        cleanExpiredAgentSessionCache(db, sessionDir);
     } catch (_) {}
 }
 

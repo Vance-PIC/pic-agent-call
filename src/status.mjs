@@ -232,3 +232,63 @@ export function getAgentStatus(db, sessionId) {
 
     return { agent_id, role: role || null, unread, display };
 }
+
+const PREFIXES = ['cc-', 'agy-'];
+const MS_7D   = 7 * 24 * 60 * 60 * 1000;
+const MS_24H  = 24 * 60 * 60 * 1000;
+const MS_5M   = 5 * 60 * 1000;
+
+// 清理 agent-sessions/ 過期快取檔
+// 規則：各 prefix 保留最新一筆（fallback 用），其餘依三條件刪除
+export function cleanExpiredAgentSessionCache(db, sessionDir) {
+    try {
+        if (!fs.existsSync(sessionDir)) return;
+
+        const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.json'));
+        const now = Date.now();
+
+        // 各 prefix 找出最新 mtime（受保護，不刪）
+        const newestByPrefix = {};
+        for (const prefix of PREFIXES) {
+            let newest = null, newestMtime = 0;
+            for (const f of files) {
+                if (!f.startsWith(prefix)) continue;
+                const mt = fs.statSync(path.join(sessionDir, f)).mtimeMs;
+                if (mt > newestMtime) { newestMtime = mt; newest = f; }
+            }
+            if (newest) newestByPrefix[prefix] = newest;
+        }
+
+        for (const f of files) {
+            const prefix = PREFIXES.find(p => f.startsWith(p));
+            if (!prefix) continue;
+
+            // 保護各 prefix 最新一筆
+            if (newestByPrefix[prefix] === f) continue;
+
+            const fp = path.join(sessionDir, f);
+            const mtime = fs.statSync(fp).mtimeMs;
+            const age = now - mtime;
+
+            // 條件一：超過 7 天
+            if (age > MS_7D) { fs.unlinkSync(fp); continue; }
+
+            // 取 term_key（檔名去 .json）查 DB
+            const termKey = f.slice(0, -5);
+            const dbRow = db.prepare(
+                `SELECT status, last_seen FROM agents WHERE term_key = ?`
+            ).get(termKey);
+
+            // 條件二：DB 無紀錄（孤兒）且超過 5 分鐘
+            if (!dbRow && age > MS_5M) { fs.unlinkSync(fp); continue; }
+
+            // 條件三：DB offline 且 last_seen 超過 24 小時
+            if (dbRow?.status === 'offline') {
+                const lastSeenMs = dbRow.last_seen
+                    ? new Date(dbRow.last_seen).getTime()
+                    : mtime;
+                if (now - lastSeenMs > MS_24H) { fs.unlinkSync(fp); continue; }
+            }
+        }
+    } catch (_) {}
+}
