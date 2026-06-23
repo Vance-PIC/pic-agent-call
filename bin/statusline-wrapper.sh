@@ -4,6 +4,12 @@
 input=$(cat)
 cwd=$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 
+# coralline statusline (若存在)
+_coralline="$HOME/.claude/coralline/statusline.sh"
+if [ -f "$_coralline" ]; then
+  printf '%s' "$input" | bash "$_coralline"
+fi
+
 # PIC_AGENT_DEV=1 → use local source tree; else use global npm install
 if [ -n "$PIC_AGENT_DEV" ]; then
   _bin="${cwd}/bin/msg-statusline.mjs"

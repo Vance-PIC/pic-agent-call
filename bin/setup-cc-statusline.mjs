@@ -41,21 +41,20 @@ function setupStatusLine(claudeDir, wrapperShDest) {
   const settingsPath = path.join(claudeDir, 'settings.json');
   const settings = readJsonFile(settingsPath) || {};
 
+  // 已有 statusLine.command → 保留不改（wrapper.sh 已 append，不需要再改指令）
+  if (settings.statusLine?.command) {
+    console.log(`[SKIP] statusLine 已存在，保留原設定`);
+    return;
+  }
+
   const bashExe = resolveGitBash();
   if (!bashExe) {
     console.error('[WARN] 找不到 Git Bash，statusLine 設定略過。請手動設定 bash 路徑。');
     return;
   }
 
-  // 使用雙反斜線格式，符合 CC settings.json 現有慣例
   const bashCmd = `"${bashExe}" --norc --noprofile "${wrapperShDest}"`;
-
-  if (!settings.statusLine) settings.statusLine = {};
-  Object.assign(settings.statusLine, {
-    type: 'command',
-    command: bashCmd,
-    refreshInterval: 5,
-  });
+  settings.statusLine = { type: 'command', command: bashCmd, refreshInterval: 5 };
 
   writeJsonFile(settingsPath, settings);
   console.log(`[OK] statusLine → ${settingsPath}`);
@@ -93,6 +92,22 @@ function setupHooks(claudeDir, gateSrc) {
   writeJsonFile(settingsPath, settings);
 }
 
+const PIC_MARKER = '# pic-agent-call statusline';
+const PIC_BLOCK = `
+${PIC_MARKER}
+_pac_bin_dev="${'$'}{cwd}/bin/msg-statusline.mjs"
+_pac_bin_global="$(npm root -g 2>/dev/null)/@pic-ai/pic-agent-call/bin/msg-statusline.mjs"
+if [ -n "$PIC_AGENT_DEV" ] && [ -f "$_pac_bin_dev" ]; then _pac_bin="$_pac_bin_dev"
+elif [ -f "$_pac_bin_global" ]; then _pac_bin="$_pac_bin_global"
+fi
+if [ -n "$_pac_bin" ]; then
+  _pac_db=""
+  if [ -n "$cwd" ] && [ -f "\${cwd}/.memory/memory-graph.db" ]; then _pac_db="\${cwd}/.memory/memory-graph.db"; fi
+  _pac_tag=$(CLAUDE_CODE_SESSION_ID="$CLAUDE_CODE_SESSION_ID" MEMORY_DB_PATH="$_pac_db" node "$_pac_bin" 2>/dev/null)
+  case "$_pac_tag" in "NO AGENT"|""|*"[未登記]"*|*"[DB ERR]"*) ;; *) printf '%s\\n' "$_pac_tag" ;; esac
+fi
+`;
+
 function copyWrapperSh(claudeDir) {
   const src = path.join(__dirname, 'statusline-wrapper.sh');
   const dest = path.join(claudeDir, 'statusline-wrapper.sh');
@@ -100,8 +115,20 @@ function copyWrapperSh(claudeDir) {
     console.error(`[ERR] 找不到 ${src}`);
     process.exit(1);
   }
-  fs.copyFileSync(src, dest);
-  console.log(`[OK] wrapper → ${dest}`);
+
+  if (fs.existsSync(dest)) {
+    const existing = fs.readFileSync(dest, 'utf8');
+    if (existing.includes(PIC_MARKER)) {
+      console.log(`[SKIP] wrapper 已含 pic-agent-call block`);
+      return dest;
+    }
+    // append 到既有 wrapper 末尾
+    fs.appendFileSync(dest, PIC_BLOCK, 'utf8');
+    console.log(`[OK] pic-agent-call block appended → ${dest}`);
+  } else {
+    fs.copyFileSync(src, dest);
+    console.log(`[OK] wrapper → ${dest}`);
+  }
   return dest;
 }
 

@@ -280,7 +280,7 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
 
         const isPrimary = agent_id === primaryAgentId;
         const dot = unread > 0 ? '🔴' : '🟢';
-        const prefix = isPrimary ? '▶' : '';
+        const prefix = isPrimary ? '\x1b[33m▶\x1b[0m' : '';
         parts.push(`${prefix}${dot}${unread}·${agent_id}`);
 
         registeredAgents.push({ agent_id, role: role || null, unread });
