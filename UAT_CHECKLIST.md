@@ -52,8 +52,30 @@
   - **步驟**：使用 Session A 的連線去呼叫 `channel_list_unread`、`channel_claim` 或 `channel_ack` 操作寄給 Session B（已註冊為其他 Agent）的訊息。
   - **期望**：API 與 MCP 核心層攔截此越權請求，拒絕操作並拋出 `403 Forbidden` 安全性錯誤。
 
-## 3. 品質門禁與流程驗證 (Quality & Process)
-- [ ] **TSK-QA-010：AI 動作前訊息稽核門禁驗收**
+## 3. 一鍵安裝腳本驗收 (Setup Scripts)
+- [ ] **TSK-QA-011：CC 一鍵安裝腳本 (setup-cc-statusline.mjs)**
+  - **步驟**：
+    1. 備份 `~/.claude/settings.json`。
+    2. 執行 `node bin/setup-cc-statusline.mjs`。
+    3. 檢查 `~/.claude/settings.json` 的 `statusLine` 與 `hooks.UserPromptSubmit`。
+    4. 確認 `~/.claude/statusline-wrapper.sh` 已複製。
+    5. 確認 `~/.claude/hooks/pic-agent-autoreg-gate.js` 已複製。
+  - **期望**：
+    1. `statusLine.command` 指向正確的 bash + wrapper.sh 路徑。
+    2. `UserPromptSubmit` hook 包含 `pic-agent-autoreg-gate.js`（不重複新增）。
+    3. 重複執行腳本不產生重複 hook 條目（冪等）。
+- [ ] **TSK-QA-012：AGY 一鍵安裝腳本 (setup-agy-statusline.mjs)**
+  - **步驟**：
+    1. 備份 `~/.gemini/settings.json`。
+    2. 執行 `node bin/setup-agy-statusline.mjs`。
+    3. 檢查 `~/.gemini/settings.json` 的 `statusLine` 與 `trusted_hooks`。
+  - **期望**：
+    1. `statusLine.command` 指向 `msg-statusline-wrapper.mjs`。
+    2. `trusted_hooks.json` 的 `*` 與所有已存在專案 key 均包含信任條目。
+    3. 重複執行不重複寫入（冪等）。
+
+## 4. 品質門禁與流程驗證 (Quality & Process)
+- [ ] **TSK-QA-013：AI 動作前訊息稽核門禁驗收**
   - **步驟**：在有未讀訊息時，嘗試要求 AI 執行寫入動作。
   - **期望**：AI 能偵測到 `unread > 0` 並拉起防守手煞車，優先 claim/read 訊息，直到 unread 為 0 才繼續執行寫入。
 
