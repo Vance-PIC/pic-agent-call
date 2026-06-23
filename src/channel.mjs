@@ -1,11 +1,23 @@
 import { randomUUID } from 'node:crypto';
+import { withRetry } from './db.mjs';
+import { getRegistration, resolveSessionId } from './status.mjs';
 
-export function sendMessage(db, sender, receiver, message, priority) {
+export async function sendMessage(db, receiver, message, sender, sessionId, priority) {
+    // 安全驗證：非 SYSTEM sender 必須與 sessionId 對應的已登記 agent_id 吻合
+    if (sender !== 'SYSTEM') {
+        const sid = sessionId || resolveSessionId();
+        const reg = getRegistration(db, sid);
+        if (!reg) throw Object.assign(new Error('401: 此會話尚未登記為 Agent 身份，請先呼叫 register_agent'), { code: 'ERR_UNAUTHORIZED' });
+        if (reg.agent_id !== sender) throw Object.assign(new Error(`401: sender 不符，登記身份為 ${reg.agent_id}`), { code: 'ERR_UNAUTHORIZED' });
+    }
+
     const msgId = `msg-${randomUUID()}`;
     const p = Number(priority) || 5;
-    db.prepare(
-        `INSERT INTO agent_collaboration_channel (message_id, sender, receiver, priority, message) VALUES (?, ?, ?, ?, ?)`
-    ).run(msgId, sender, receiver, p, message);
+    await withRetry(() => {
+        db.prepare(
+            `INSERT INTO agent_collaboration_channel (message_id, sender, receiver, priority, message) VALUES (?, ?, ?, ?, ?)`
+        ).run(msgId, sender, receiver, p, message);
+    });
     return { message_id: msgId, status: 'UNREAD' };
 }
 

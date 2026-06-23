@@ -3,10 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+// 進程級快取：避免重複掃目錄
+let _cachedAgyConvId = undefined;
+
 function detectActiveAgyConversationId() {
+    if (_cachedAgyConvId !== undefined) return _cachedAgyConvId;
     try {
         const brainDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
-        if (!fs.existsSync(brainDir)) return null;
+        if (!fs.existsSync(brainDir)) { _cachedAgyConvId = null; return null; }
         const dirs = fs.readdirSync(brainDir);
         let latestDir = null;
         let latestTime = 0;
@@ -21,10 +25,20 @@ function detectActiveAgyConversationId() {
                 }
             }
         }
+        _cachedAgyConvId = latestDir;
         return latestDir;
     } catch (_) {
+        _cachedAgyConvId = null;
         return null;
     }
+}
+
+// 進程級 session ID 快取
+let _cachedSessionId = undefined;
+
+export function _resetSessionIdCache() {
+    _cachedSessionId = undefined;
+    _cachedAgyConvId = undefined;
 }
 
 // 解析當前 session_id（MCP server 啟動後繼承 parent env）
@@ -41,12 +55,14 @@ export function resolveSessionId(callerType) {
             || process.env.AGENT_SESSION_ID
             || `${os.hostname()}-${process.pid}`;
     }
-    // MCP server / 通用 context：保留完整 fallback 鏈
-    return process.env.CLAUDE_CODE_SESSION_ID
+    // MCP server / 通用 context：快取結果避免重複解析
+    if (_cachedSessionId !== undefined) return _cachedSessionId;
+    _cachedSessionId = process.env.CLAUDE_CODE_SESSION_ID
         || process.env.ANTIGRAVITY_CONVERSATION_ID
         || detectActiveAgyConversationId()
         || process.env.AGENT_SESSION_ID
         || `${os.hostname()}-${process.pid}`;
+    return _cachedSessionId;
 }
 
 // 查詢 session 是否已有 registration

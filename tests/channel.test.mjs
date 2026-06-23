@@ -9,10 +9,13 @@ function makeDb() {
   return initDatabase(':memory:', TMP_JSON);
 }
 
+// NOTE: sendMessage signature: (db, receiver, message, sender, sessionId, priority)
+// Tests use sender='SYSTEM' to bypass session auth validation.
+
 // ─── 1. sendMessage — 回傳 message_id，status='UNREAD' ────────────────────
-test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', () => {
+test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', async () => {
   const db = makeDb();
-  const result = sendMessage(db, 'CC-SA1', 'CC-PG1', 'hello', 5);
+  const result = await sendMessage(db, 'CC-PG1', 'hello', 'SYSTEM', null, 5);
   expect(result).toHaveProperty('message_id');
   expect(result.message_id).toMatch(/^msg-/);
   expect(result.status).toBe('UNREAD');
@@ -22,10 +25,10 @@ test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', () => {
 });
 
 // ─── 2. listUnread — 只回傳 UNREAD 訊息 ──────────────────────────────────
-test('listUnread: 只回傳 UNREAD 訊息，已讀訊息不應出現', () => {
+test('listUnread: 只回傳 UNREAD 訊息，已讀訊息不應出現', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'PG1', 'msg-unread', 5);
-  const m2 = sendMessage(db, 'SA', 'PG1', 'msg-to-claim', 5);
+  const m1 = await sendMessage(db, 'PG1', 'msg-unread', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'PG1', 'msg-to-claim', 'SYSTEM', null, 5);
 
   // 搶鎖 m2，使其進入 IN_PROGRESS（不應出現在 listUnread）
   claimMessage(db, m2.message_id, 'PG1');
@@ -38,11 +41,11 @@ test('listUnread: 只回傳 UNREAD 訊息，已讀訊息不應出現', () => {
 });
 
 // ─── 3. listUnread — pool 萬用字元（receiver='CC?'）匹配 ─────────────────
-test('listUnread: pool 萬用字元 receiver="CC?" 應匹配所有 CC 前綴接收者', () => {
+test('listUnread: pool 萬用字元 receiver="CC?" 應匹配所有 CC 前綴接收者', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'CC-PG1', 'for-pg1', 5);
-  const m2 = sendMessage(db, 'SA', 'CC-PG2', 'for-pg2', 5);
-  const m3 = sendMessage(db, 'SA', 'Gemini-PG1', 'for-gemini', 5);
+  const m1 = await sendMessage(db, 'CC-PG1', 'for-pg1', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'CC-PG2', 'for-pg2', 'SYSTEM', null, 5);
+  const m3 = await sendMessage(db, 'Gemini-PG1', 'for-gemini', 'SYSTEM', null, 5);
 
   const result = listUnread(db, 'CC?');
   const ids = result.messages.map(m => m.message_id);
@@ -53,11 +56,11 @@ test('listUnread: pool 萬用字元 receiver="CC?" 應匹配所有 CC 前綴接�
 });
 
 // ─── 4. listUnread — receiver='all' 回傳所有 UNREAD ─────────────────────
-test('listUnread: receiver="all" 回傳所有 UNREAD 訊息', () => {
+test('listUnread: receiver="all" 回傳所有 UNREAD 訊息', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'PG1', 'msg1', 5);
-  const m2 = sendMessage(db, 'SA', 'PG2', 'msg2', 5);
-  const m3 = sendMessage(db, 'SA', 'Gemini', 'msg3', 5);
+  const m1 = await sendMessage(db, 'PG1', 'msg1', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'PG2', 'msg2', 'SYSTEM', null, 5);
+  const m3 = await sendMessage(db, 'Gemini', 'msg3', 'SYSTEM', null, 5);
 
   const result = listUnread(db, 'all');
   const ids = result.messages.map(m => m.message_id);
@@ -69,9 +72,9 @@ test('listUnread: receiver="all" 回傳所有 UNREAD 訊息', () => {
 });
 
 // ─── 5. claimMessage — 成功搶鎖，status → IN_PROGRESS ────────────────────
-test('claimMessage: 成功搶鎖後 status 應更新為 IN_PROGRESS', () => {
+test('claimMessage: 成功搶鎖後 status 應更新為 IN_PROGRESS', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'claimable', 5);
+  const m = await sendMessage(db, 'PG1', 'claimable', 'SYSTEM', null, 5);
   const result = claimMessage(db, m.message_id, 'PG1');
   expect(result.success).toBe(true);
   expect(result.message_id).toBe(m.message_id);
@@ -82,9 +85,9 @@ test('claimMessage: 成功搶鎖後 status 應更新為 IN_PROGRESS', () => {
 });
 
 // ─── 6. claimMessage — 重複搶鎖回傳 success:false ────────────────────────
-test('claimMessage: 已搶鎖訊息再次搶鎖應回傳 success:false', () => {
+test('claimMessage: 已搶鎖訊息再次搶鎖應回傳 success:false', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'double-claim', 5);
+  const m = await sendMessage(db, 'PG1', 'double-claim', 'SYSTEM', null, 5);
   claimMessage(db, m.message_id, 'PG1'); // 第一次搶鎖
   const result = claimMessage(db, m.message_id, 'PG2'); // 第二次搶鎖
   expect(result.success).toBe(false);
@@ -101,9 +104,9 @@ test('claimMessage: 不存在的 message_id 應回傳 success:false', () => {
 });
 
 // ─── 8. ackMessage — 正確 owner ACK，status → READ ───────────────────────
-test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', () => {
+test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'to-ack', 5);
+  const m = await sendMessage(db, 'PG1', 'to-ack', 'SYSTEM', null, 5);
   claimMessage(db, m.message_id, 'PG1');
   const result = ackMessage(db, m.message_id, 'PG1');
   expect(result.success).toBe(true);
@@ -114,9 +117,9 @@ test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', () => {
 });
 
 // ─── 9. ackMessage — 錯誤 owner ACK 回傳 success:false ──────────────────
-test('ackMessage: 非 lock_owner 的 agent ACK 應回傳 success:false', () => {
+test('ackMessage: 非 lock_owner 的 agent ACK 應回傳 success:false', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'wrong-owner-ack', 5);
+  const m = await sendMessage(db, 'PG1', 'wrong-owner-ack', 'SYSTEM', null, 5);
   claimMessage(db, m.message_id, 'PG1');
   const result = ackMessage(db, m.message_id, 'PG2'); // 錯誤 owner
   expect(result.success).toBe(false);

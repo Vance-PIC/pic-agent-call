@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { withRetry } from './db.mjs';
 
 const TIMEOUT_MINUTES = 30;
 
@@ -22,14 +23,14 @@ export function initAgentsTable(db) {
     try { db.exec(`ALTER TABLE agents ADD COLUMN term_key TEXT`); } catch (_) {}
 }
 
-export function createTask(db, feature, assign_to, payload, type, relay_to) {
+export async function createTask(db, feature, assign_to, payload, type, relay_to) {
     if (!feature || typeof feature !== 'string' || !feature.trim() || feature.length > 100)
         return { success: false, reason: 'validation_error' };
     if (!assign_to || typeof assign_to !== 'string' || !assign_to.trim() || assign_to.length > 50)
         return { success: false, reason: 'validation_error' };
     if (!payload || typeof payload !== 'string' || !payload.trim())
         return { success: false, reason: 'validation_error' };
-    if (Buffer.byteLength(payload, 'utf8') > 65536)
+    if (Buffer.byteLength(payload, 'utf8') > 1048576)
         return { success: false, reason: 'payload_too_large' };
 
     const validTypes = ['task', 'final'];
@@ -47,17 +48,25 @@ export function createTask(db, feature, assign_to, payload, type, relay_to) {
     if (existing) return { task_id: existing.task_id, status: existing.status, type: existing.type, idempotent: true };
 
     const taskId = 'task-' + randomUUID();
-    db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+    await withRetry(() => {
+        db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+    });
     return { task_id: taskId, status: 'pending', type: resolvedType, idempotent: false };
 }
 
 export function listPendingTasks(db, assign_to) {
     const assignTo = (assign_to && typeof assign_to === 'string') ? assign_to.trim() : null;
+    // 超時釋放：基於認領該任務的 agent 的 agent_timeout_sec；fallback 用 TIMEOUT_MINUTES
     db.prepare(
         `UPDATE tasks SET status='pending', claimed_by=NULL, claimed_at=NULL, updated_at=datetime('now','localtime')
-         WHERE status='claimed' AND claimed_at < datetime('now','localtime',? || ' minutes')`
-    ).run(`-${TIMEOUT_MINUTES}`);
+         WHERE status='claimed' AND claimed_by IS NOT NULL AND (
+             SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
+         ) < datetime('now','localtime','-' || COALESCE(
+             (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
+             ${TIMEOUT_MINUTES * 60}
+         ) || ' seconds')`
+    ).run();
 
     const rows = assignTo
         ? db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)
@@ -87,11 +96,11 @@ export function claimTask(db, task_id, agent_id) {
     }
 }
 
-export function completeTask(db, task_id, result) {
+export async function completeTask(db, task_id, result) {
     if (!task_id || result === undefined || result === null)
         return { success: false, reason: 'validation_error' };
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-    if (Buffer.byteLength(resultStr, 'utf8') > 65536)
+    if (Buffer.byteLength(resultStr, 'utf8') > 1048576)
         return { success: false, reason: 'payload_too_large' };
 
     const row = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task_id);
@@ -99,12 +108,14 @@ export function completeTask(db, task_id, result) {
     if (row.status !== 'claimed') return { success: false, task_id, reason: 'invalid_status', current_status: row.status };
 
     const now = _now();
-    db.prepare(`UPDATE tasks SET status='completed', result=?, completed_at=?, updated_at=? WHERE task_id=? AND status='claimed'`)
-      .run(resultStr, now, now, task_id);
+    await withRetry(() => {
+        db.prepare(`UPDATE tasks SET status='completed', result=?, completed_at=?, updated_at=? WHERE task_id=? AND status='claimed'`)
+          .run(resultStr, now, now, task_id);
+    });
     return { success: true, task_id, status: 'completed', completed_at: now };
 }
 
-export function failTask(db, task_id, fail_reason) {
+export async function failTask(db, task_id, fail_reason) {
     if (!task_id || !fail_reason || typeof fail_reason !== 'string' || !fail_reason.trim())
         return { success: false, reason: 'validation_error' };
     if (Buffer.byteLength(fail_reason, 'utf8') > 1000)
@@ -115,8 +126,10 @@ export function failTask(db, task_id, fail_reason) {
     if (row.status !== 'claimed') return { success: false, task_id, reason: 'invalid_status', current_status: row.status };
 
     const now = _now();
-    db.prepare(`UPDATE tasks SET status='failed', fail_reason=?, updated_at=? WHERE task_id=? AND status='claimed'`)
-      .run(fail_reason.trim(), now, task_id);
+    await withRetry(() => {
+        db.prepare(`UPDATE tasks SET status='failed', fail_reason=?, updated_at=? WHERE task_id=? AND status='claimed'`)
+          .run(fail_reason.trim(), now, task_id);
+    });
     return { success: true, task_id, status: 'failed' };
 }
 

@@ -153,31 +153,47 @@ export function setup(options = {}) {
     return { db, dbPath: paths.dbPath, jsonPath: paths.jsonPath };
 }
 
+// 防抖計時器 map：jsonPath → timer handle
+const _syncTimers = new Map();
+const DEBOUNCE_MS = 600;
+
 export function syncDbToJson(db, jsonPath) {
-    const rows = db.prepare(`
-        SELECT e.name, e.entityType, e.description, o.observation
-        FROM entities e
-        LEFT JOIN observations o ON e.name = o.entity_name
-        ORDER BY e.name, o.id ASC
-    `).all();
+    // 清除前一個計時器，重新計時（防抖）
+    if (_syncTimers.has(jsonPath)) clearTimeout(_syncTimers.get(jsonPath));
+    const timer = setTimeout(() => {
+        _syncTimers.delete(jsonPath);
+        _doSyncDbToJson(db, jsonPath);
+    }, DEBOUNCE_MS);
+    _syncTimers.set(jsonPath, timer);
+}
 
-    const map = {};
-    for (const row of rows) {
-        if (!map[row.name]) {
-            map[row.name] = { type: 'entity', name: row.name, entityType: row.entityType, observations: [] };
-        }
-        if (row.observation) map[row.name].observations.push(row.observation);
-    }
-
-    const jsonLines = Object.values(map).map(o => JSON.stringify(o)).join('\n') + '\n';
-    const tmpPath = `${jsonPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, jsonLines, 'utf8');
+async function _doSyncDbToJson(db, jsonPath) {
     try {
-        fs.renameSync(tmpPath, jsonPath);
-    } catch (_) {
-        try { fs.unlinkSync(tmpPath); } catch (__) {}
-        fs.writeFileSync(jsonPath, jsonLines, 'utf8');
-    }
+        const rows = db.prepare(`
+            SELECT e.name, e.entityType, e.description, o.observation
+            FROM entities e
+            LEFT JOIN observations o ON e.name = o.entity_name
+            ORDER BY e.name, o.id ASC
+        `).all();
+
+        const map = {};
+        for (const row of rows) {
+            if (!map[row.name]) {
+                map[row.name] = { type: 'entity', name: row.name, entityType: row.entityType, observations: [] };
+            }
+            if (row.observation) map[row.name].observations.push(row.observation);
+        }
+
+        const jsonLines = Object.values(map).map(o => JSON.stringify(o)).join('\n') + '\n';
+        const tmpPath = `${jsonPath}.${process.pid}.tmp`;
+        await fs.promises.writeFile(tmpPath, jsonLines, 'utf8');
+        try {
+            await fs.promises.rename(tmpPath, jsonPath);
+        } catch (_) {
+            try { await fs.promises.unlink(tmpPath); } catch (__) {}
+            await fs.promises.writeFile(jsonPath, jsonLines, 'utf8');
+        }
+    } catch (_) {}
 }
 
 export async function withRetry(fn, maxRetries = MAX_RETRIES) {

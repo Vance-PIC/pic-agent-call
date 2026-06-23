@@ -15,7 +15,7 @@ import path from 'node:path';
 let initDatabase;
 let resolveSessionId, getRegistration, findAgentIdConflict;
 let registerAgent, handleOrphanedMessages, getAgentStatus;
-let cleanExpiredAgentSessionCache;
+let cleanExpiredAgentSessionCache, _resetSessionIdCache;
 
 beforeAll(async () => {
   const dbMod = await import('../src/db.mjs');
@@ -29,6 +29,7 @@ beforeAll(async () => {
   handleOrphanedMessages        = statusMod.handleOrphanedMessages;
   getAgentStatus                = statusMod.getAgentStatus;
   cleanExpiredAgentSessionCache = statusMod.cleanExpiredAgentSessionCache;
+  _resetSessionIdCache          = statusMod._resetSessionIdCache;
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ function restoreEnv() {
 
 describe('resolveSessionId()', () => {
   beforeEach(saveEnv);
-  afterEach(restoreEnv);
+  afterEach(() => { restoreEnv(); _resetSessionIdCache?.(); });
 
   // 1. 讀 CLAUDE_CODE_SESSION_ID
   test('1. 讀 CLAUDE_CODE_SESSION_ID env', () => {

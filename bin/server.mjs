@@ -80,7 +80,7 @@ server.tool('create_entities',
     '【官方相容】建立多個新的知識實體。同名實體已存在則忽略。',
     { entities: z.array(z.object({ name: z.string(), entityType: z.string(), observations: z.array(z.string()).optional() })) },
     async ({ entities }) => {
-        memory.createEntities(db, jsonPath, entities);
+        await memory.createEntities(db, jsonPath, entities);
         return text(`✅ 已成功建立 ${entities.length} 個實體。`);
     }
 );
@@ -89,7 +89,7 @@ server.tool('add_observations',
     '【官方相容】向多個已存在的知識實體添加新的觀測記錄。實體不存在則失敗。',
     { observations: z.array(z.object({ entityName: z.string(), contents: z.array(z.string()) })) },
     async ({ observations }) => {
-        memory.addObservations(db, jsonPath, observations);
+        await memory.addObservations(db, jsonPath, observations);
         return text('✅ 已成功為指定的實體新增觀測值。');
     }
 );
@@ -98,7 +98,7 @@ server.tool('create_relations',
     '【官方相容】在兩個實體之間建立單向關聯關係。實體不存在會自動建立臨時實體。',
     { relations: z.array(z.object({ from: z.string(), to: z.string(), relationType: z.string() })) },
     async ({ relations }) => {
-        memory.createRelations(db, jsonPath, relations);
+        await memory.createRelations(db, jsonPath, relations);
         return text(`✅ 已成功建立 ${relations.length} 個實體關聯。`);
     }
 );
@@ -123,7 +123,7 @@ server.tool('create_task',
       payload: z.string().max(65536), type: z.enum(['task','final']).optional(),
       relay_to: z.string().max(50).optional() },
     async (args) => {
-        const r = tasks.createTask(db, args.feature, args.assign_to, args.payload, args.type, args.relay_to);
+        const r = await tasks.createTask(db, args.feature, args.assign_to, args.payload, args.type, args.relay_to);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -147,7 +147,7 @@ server.tool('complete_task',
     '【task-broker】標記任務完成並寫回執行結果。任務須為 claimed 狀態。',
     { task_id: z.string(), result: z.string().max(65536) },
     async (args) => {
-        const r = tasks.completeTask(db, args.task_id, args.result);
+        const r = await tasks.completeTask(db, args.task_id, args.result);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -156,7 +156,7 @@ server.tool('fail_task',
     '【task-broker】標記任務失敗並記錄原因。任務須為 claimed 狀態。',
     { task_id: z.string(), fail_reason: z.string().max(1000) },
     async (args) => {
-        const r = tasks.failTask(db, args.task_id, args.fail_reason);
+        const r = await tasks.failTask(db, args.task_id, args.fail_reason);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -176,7 +176,10 @@ server.tool('channel_send',
     '【channel】傳送訊息給指定 AI 視窗或 pool。',
     { sender: z.string(), receiver: z.string(), message: z.string(),
       priority: z.number().min(1).max(10).optional() },
-    async (args) => textJson(channel.sendMessage(db, args.sender, args.receiver, args.message, args.priority))
+    async (args) => {
+        const sessionId = resolveSessionId();
+        return textJson(await channel.sendMessage(db, args.receiver, args.message, args.sender, sessionId, args.priority));
+    }
 );
 
 server.tool('channel_list_unread',
