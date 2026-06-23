@@ -70,6 +70,32 @@
     1.  **新增宣告檔**：
         *   在專案根目錄下建立 `index.d.ts` 定義檔，為導出之業務邏輯介面（如 `setup`, `sendMessage`, `getAgentStatus` 等）聲明完整型別。
 
+### 🧹 方案 G：Session 快取檔案自動清理機制
+*   **調整目標**：解決 `.memory/agent-sessions/` 目錄下的快取 json 檔案無限制地累積問題。在保障 statusline hook 的 fallback 機制正常運作（能讀到當前平台上最新一筆 active/offline session 身份）的前提下，自動清理過期的 session 檔案。
+*   **規格修改**：
+    1.  **清理判定規則**：
+        *   **保護最新 fallback 快取**：對於當前平台（以 `cc-` 和 `agy-` 為區分，對應 Claude Code 和 Antigravity），必須**各保留一筆 mtime 最新的快取檔案**作為 statusline fallback。即使該 session 在 DB 中已是 `'offline'` 或已被刪除，亦不可清理此最新檔案。
+        *   **生命週期清理**：除受保護的最新 fallback 外，其餘檔案若符合以下任一條件即執行清理：
+            *   **條件一（極舊檔案）**：檔案修改時間（mtime）超過 7 天（168 小時）者，一律直接刪除。
+            *   **條件二（孤兒快取）**：在資料庫 `agents` 表中，完全找不到該 `term_key` 對應的 session 紀錄（代表已被 force 覆寫接管刪除），且 mtime 已超過 5 分鐘（防止剛建立的併發時間差誤殺）。
+            *   **條件三（超期離線）**：在資料庫中對應的記錄其 `status` 為 `'offline'`，且其 last_seen（或 mtime）距離當前時間已超過 24 小時。
+    2.  **觸發時機**：
+        *   在 `register_agent` MCP tool 寫入新的 session 快取檔案時（即 `writeAgentSessionCache` 執行結束前），順便調用 `cleanExpiredAgentSessionCache(db, sessionDir)` 進行清理。以確保在有新 session 產生時主動維持目錄的整潔，且不會對需要極高讀取速度的 `msg-statusline.mjs` 造成額外負擔。
+
+---
+
+## 📖 附錄：動作前訊息稽核門禁 (Pre-action Message Check Gate) 機制說明
+
+*   **運作原理**：
+    本專案的「動作前訊息稽核門禁」並非透過 Git Hook 或 Bash 實體腳本等物理硬體層面實作，而是基於 **AI 代理人自我約束的規則 (Rule-based Agent Gate)**。
+*   **設定方式**：
+    將該門禁的執行條件與規範寫入專案根目錄的 `.agents/AGENTS.md` (或本機全域 `~/.gemini/config/AGENTS.md`) 中。當 AI 代理人（Gemini/Claude Code 等）啟動並載入此專案時，會自動讀取並解析該 Rules 檔，並在執行敏感工具前在代碼思維中優先執行此門禁檢查。
+*   **觸發時機與流程**：
+    1.  **檢驗時機**：當 AI 代理人要調用任何「寫入/修改檔案工具」（例如 `replace_file_content`、`write_to_file`）或「指令執行工具」（例如 `run_command`）**之前**。
+    2.  **稽核動作**：主動調用 `pic-agent-call` 的 `agent_status` MCP 工具。
+    3.  **防守手煞車**：若 `unread > 0`，則嚴禁執行後續寫入或指令，必須立刻呼叫 `channel_list_unread` 讀取並優先處理（或回覆），直到 `unread` 降為 0，才可繼續原定的工具調用。
+    4.  **批次作業例外**：當 AI 需要連續寫入多個檔案（如批次產生多個提案章節）時，為了節省 Token 與減少回應延遲，會在**批次開始前**呼叫 `agent_status` 一次並在對話中明確宣告；中途每寫入 5 個檔案強制預檢一次；在**批次完成後、向人類回報成果前**再次呼叫 `agent_status` 做最後稽核。但涉及外部發布的敏感指令（如 `git push`、`npm publish`）不在此豁免內，必須強制單次預檢。
+
 ---
 
 ## 📅 2. 完工標準 (DoD)
@@ -77,6 +103,7 @@
 1.  **規格一致性**：所有程式實作需與此 Proposal 規格 100% 相符。
 2.  **單元測試覆蓋**：
     *   針對 `channel_send` 安全性邏輯，新增單元測試，驗證若無註冊身份發送訊息會失敗，而註冊後發送時 `sender` 會自動被正確帶入。
+    *   針對 `register_agent` 清理快取邏輯，新增單元測試，驗證過期快取能被自動清理且最新 fallback 檔案受到保護。
     *   執行 `npm run test`，所有單元測試須 100% Pass。
 3.  **物理證據驗收**：
     *   測試報告與證據需寫入 `evidence/`。
@@ -86,5 +113,5 @@
 ## 💬 3. 人類決策閘口 (Decision Gate)
 
 請評估本方案是否合適：
-- [ ] **同意此提案**：我們將此規格更新至 `specs/P2_Design/SDD-Spec.md` 與 `api-spec.md` 中，並通知 `pic-PG` (CC) 認領任務進行重構開發。
+- [x] **同意此提案**：我們將此規格更新至 `specs/P2_Design/SDD-Spec.md` 與 `api-spec.md` 中，並通知 `pic-PG` (CC) 認領任務進行重構開發。
 - [ ] **需要修改**：請提出您希望調整的規格細節。

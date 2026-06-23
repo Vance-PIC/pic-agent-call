@@ -217,4 +217,9 @@ export function getAgentStatus(
   sessionId: string
 ): { agent_id: string; role: string | null; unread: number; display: string } | null;
 
+export function getAgentsByPlatformStatus(
+  db: DatabaseSync,
+  platformPrefix: string
+): Array<{ agent_id: string; role: string | null; status: string; unread: number }>;
+
 export function cleanExpiredAgentSessionCache(db: DatabaseSync, sessionDir: string): void;

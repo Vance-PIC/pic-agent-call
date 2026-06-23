@@ -16,6 +16,7 @@ let initDatabase;
 let resolveSessionId, getRegistration, findAgentIdConflict;
 let registerAgent, handleOrphanedMessages, getAgentStatus;
 let cleanExpiredAgentSessionCache, _resetSessionIdCache;
+let getAgentsByPlatformStatus;
 
 beforeAll(async () => {
   const dbMod = await import('../src/db.mjs');
@@ -30,6 +31,7 @@ beforeAll(async () => {
   getAgentStatus                = statusMod.getAgentStatus;
   cleanExpiredAgentSessionCache = statusMod.cleanExpiredAgentSessionCache;
   _resetSessionIdCache          = statusMod._resetSessionIdCache;
+  getAgentsByPlatformStatus     = statusMod.getAgentsByPlatformStatus;
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -392,6 +394,65 @@ describe('getAgentStatus()', () => {
     const result = getAgentStatus(db, 'sess-status-6');
 
     expect(result.unread).toBe(2);
+  });
+});
+
+// ── getAgentsByPlatformStatus() ───────────────────────────────────────────────
+
+describe('getAgentsByPlatformStatus()', () => {
+  let db;
+
+  beforeEach(() => { db = makeDb(); });
+  afterEach(() => { try { db.close(); } catch (_) {} });
+
+  // 30. 無匹配 prefix → 回傳空陣列
+  test('30. 無 CC- 前綴的 agent 時回傳空陣列', () => {
+    const result = getAgentsByPlatformStatus(db, 'CC-');
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(0);
+  });
+
+  // 31. 有匹配的 agent，無未讀 → unread = 0
+  test('31. CC- agent 有 register，無未讀時 unread = 0', () => {
+    registerAgent(db, 'sess-p1', 'CC-PG1', 'PG');
+
+    const result = getAgentsByPlatformStatus(db, 'CC-');
+
+    expect(result.length).toBe(1);
+    expect(result[0].agent_id).toBe('CC-PG1');
+    expect(result[0].unread).toBe(0);
+  });
+
+  // 32. 有匹配的 agent，有未讀 → 正確計數
+  test('32. CC- agent 有 2 條 UNREAD，unread = 2', () => {
+    registerAgent(db, 'sess-p2', 'CC-SA1', 'SA');
+    insertChannelMsg(db, { message_id: 'msg-p-001', sender: 'X', receiver: 'CC-SA1' });
+    insertChannelMsg(db, { message_id: 'msg-p-002', sender: 'X', receiver: 'CC-SA1' });
+
+    const result = getAgentsByPlatformStatus(db, 'CC-');
+    const sa = result.find(a => a.agent_id === 'CC-SA1');
+    expect(sa).toBeDefined();
+    expect(sa.unread).toBe(2);
+  });
+
+  // 33. pool 訊息（role?）計入 unread
+  test('33. receiver=SA? pool 訊息計入 unread', () => {
+    registerAgent(db, 'sess-p3', 'CC-SA2', 'SA');
+    insertChannelMsg(db, { message_id: 'msg-pool-p1', sender: 'PG', receiver: 'SA?' });
+
+    const result = getAgentsByPlatformStatus(db, 'CC-');
+    const sa = result.find(a => a.agent_id === 'CC-SA2');
+    expect(sa.unread).toBe(1);
+  });
+
+  // 34. 不同 prefix 的 agent 不混入
+  test('34. AGY- agent 不出現在 CC- prefix 查詢結果', () => {
+    registerAgent(db, 'sess-agy1', 'AGY-SA1', 'SA');
+    insertChannelMsg(db, { message_id: 'msg-agy-001', sender: 'X', receiver: 'AGY-SA1' });
+
+    const result = getAgentsByPlatformStatus(db, 'CC-');
+    const found = result.find(a => a.agent_id === 'AGY-SA1');
+    expect(found).toBeUndefined();
   });
 });
 

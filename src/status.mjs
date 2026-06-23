@@ -249,6 +249,31 @@ export function getAgentStatus(db, sessionId) {
     return { agent_id, role: role || null, unread, display };
 }
 
+// 查詢同平台所有已註冊 agent 的未讀數（供多角色並列狀態列用）
+// platformPrefix: 'CC-' | 'AGY-'
+export function getAgentsByPlatformStatus(db, platformPrefix) {
+    const agents = db.prepare(
+        `SELECT agent_id, role, status FROM agents WHERE agent_id LIKE ?`
+    ).all(`${platformPrefix}%`);
+
+    return agents.map(({ agent_id, role, status }) => {
+        const pool = role ? `${role}?` : null;
+        let row;
+        if (pool) {
+            row = db.prepare(
+                `SELECT COUNT(*) as count FROM agent_collaboration_channel
+                 WHERE status = 'UNREAD' AND (receiver = ? OR receiver = ? OR receiver = 'all')`
+            ).get(agent_id, pool);
+        } else {
+            row = db.prepare(
+                `SELECT COUNT(*) as count FROM agent_collaboration_channel
+                 WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'all')`
+            ).get(agent_id);
+        }
+        return { agent_id, role: role || null, status, unread: row?.count || 0 };
+    });
+}
+
 const PREFIXES = ['cc-', 'agy-'];
 const MS_7D   = 7 * 24 * 60 * 60 * 1000;
 const MS_24H  = 24 * 60 * 60 * 1000;

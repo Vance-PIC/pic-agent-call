@@ -132,6 +132,21 @@ pic-agent-call/
 3.  **Session ID 記憶體快取**：
     *   `resolveSessionId` 優先解析環境變數（如 `ANTIGRAVITY_CONVERSATION_ID` 或 `CLAUDE_CODE_SESSION_ID`），並將動態掃描目錄結果快取在進程記憶體中，防止重複硬碟 I/O。
 4.  **Channel 訊息 Sender 安全認證**：
-    *   `channel_send` 的 MCP schema 與核心 API **移除由前端傳入的 `sender` 參數**。
-    *   伺服器端收到發送請求後，自動利用 `resolveSessionId` 解析出當前 Session 並向資料庫查詢所登記的 `agent_id` 作為 `sender` 寫入。未註冊之會話將拋出 `401 Unauthorized` 錯誤。
-
+    *   `channel_send` 的 MCP 暴露工具層 schema **移除前端傳入的 `sender` 參數**，以防偽造。
+    *   核心 `channel.mjs` 中的 `sendMessage` API 簽名調整為 `sendMessage(db, receiver, message, sender, sessionId, priority?)`。API 內部將執行安全性校驗：若 `sender` 不為 `SYSTEM`，則必須在 DB 中存在以 `sessionId` 登記的 `agent_id` 且必須與 `sender` 完全相符；不吻合或未註冊則拋出安全性錯誤。
+    *   單元測試可直接在 DB 註冊測試 agent 或以 `SYSTEM` 作為 sender，維持測試友善度。
+    *   MCP Tool Handler 自動透過 `resolveSessionId()` 獲取當前 `sessionId` 與查得之 `agent_id` 當作參數傳給 `sendMessage`。
+5.  **Session 快取檔案自動清理機制**：
+    *   在 `register_agent` MCP tool 寫入新 cache 時，自動調用 `cleanExpiredAgentSessionCache` 清理舊快取檔，維持目錄整潔。
+    *   **保留保護**：對當前平台（以 `cc-` 和 `agy-` 區分，對應 Claude Code 和 Antigravity），各保留一筆 mtime 最新的快取檔案，即使已 offline 亦不可刪除（用作 statusline fallback 顯示）。
+    *   **清理標準**：其餘快取 json 檔案若 mtime > 7 天，一律直接刪除；若 DB 中無對應 session 紀錄（孤兒檔案）且 mtime > 5 分鐘，一律刪除；若 DB 中對應 status 欄位為 `'offline'` 且 last_seen (或 mtime) 已超期大於 24 小時，一律刪除。
+6.  **動作前訊息稽核門禁 (Pre-action Message Check Gate) 機制**：
+    *   規範 AI 代理人於調用任何「寫入/修改檔案」或「執行指令」工具之前，必須強制主動執行 `agent_status` 查詢 unread 訊息。若 `unread > 0`，必須暫停寫入（防守手煞車），直至讀取並處理完畢。批次作業時於頭尾預檢且中途每寫入 5 個檔案強制預檢一次；敏感部署/提交命令無批次豁免權。
+7.  **多角色並列指示器與平台聚合狀態列 (Multi-role Statusline Aggregation)**：
+    *   `msg-statusline.mjs` 執行時，根據當前 `callerType`（`cc` 或是 `agy`）自動識別所屬平台。
+    *   除了讀取當前視窗 `term_key` 的主身份狀態外，必須向 DB 查詢該平台下所有已註冊且活躍/離線的角色（如 `WHERE agent_id LIKE 'AGY-%'` 或 `LIKE 'CC-%'`）與其各自的未讀訊息數。
+    *   拼裝成並列格式輸出：當前視窗主身份固定排在首位，其餘有未讀數的角色依序並列顯示，並以 `|` 區隔（例如：`🟢0·SA | 🔴1·PJM | 🔴2·QA`）。確保使用者在單視窗切換或多實例並行時，能即時掌握平台全角色的未讀狀態，消除訊息漏看盲區。
+8.  **AI 啟動時自動與互動式引導註冊機制 (Auto & Interactive Registration)**：
+    *   規範 AI 代理人於新會話啟動執行 `Session Startup Protocol` 時，若呼叫 `agent_status` 發現當前 session 狀態為 `registered: false`：
+        1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 註冊（如 `CC-PG1` 或 `AGY-SA`）。
+        2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項（如 SA / PG / QA / PM / DevOps 等）詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。

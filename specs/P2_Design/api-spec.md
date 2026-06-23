@@ -98,12 +98,14 @@ export function searchNodes(
 
 ```js
 // 傳送訊息
-// ⚠️ v1.1.0 安全強化：移除 sender 參數。內部利用 resolveSessionId 獲取當前 sessionId
-// 並從 DB 查詢對應登記的 agent_id 作為 sender 寫入。若未註冊則拋出 Error。
+// ⚠️ v1.1.0 安全強化：MCP 工具層移除 sender 參數以防偽造。
+// sendMessage API 調整為接收 sessionId，並在內部驗證 sender 的註冊合法性（SYSTEM 豁免）。
 export function sendMessage(
   db: DatabaseSync,
   receiver: string,   // 具體名稱 | pool? | all
   message: string,
+  sender: string,
+  sessionId: string,
   priority?: number   // 1~10，預設 5
 ): { message_id: string, status: 'UNREAD' }
 
@@ -241,4 +243,12 @@ export function getAgentStatus(
   db: DatabaseSync,
   sessionId: string
 ): { agent_id: string, role: string, unread: number, display: string } | null
+
+// 🧹 v1.1.0 快取清理：自動清理 .memory/agent-sessions/ 目錄下的過期 JSON 檔案
+// 對各平台（cc- / agy-）保留最新修改時間的一個 fallback 檔案，清理其餘孤兒與超期檔案
+export function cleanExpiredAgentSessionCache(
+  db: DatabaseSync,
+  sessionDir: string
+): void
 ```
+

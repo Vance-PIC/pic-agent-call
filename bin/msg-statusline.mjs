@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from '../src/db.mjs';
-import { resolveSessionId, getRegistration, getRegistrationByAgentId, getAgentStatus } from '../src/status.mjs';
+import { resolveSessionId, getRegistration, getRegistrationByAgentId, getAgentStatus, getAgentsByPlatformStatus } from '../src/status.mjs';
 
 let db, dbPath;
 try {
@@ -56,7 +56,25 @@ if (!reg) {
     const agentId = status?.agent_id ?? reg.agent_id;
     const unread = status?.unread ?? 0;
     const icon = unread > 0 ? '🔴' : '🟢';
-    process.stdout.write(`${icon}${unread}·${agentId}\n`);
+    const primary = `${icon}${unread}·${agentId}`;
+
+    // 多角色並列：查同平台其他 agent，只顯示有未讀的
+    const platformPrefix = callerType === 'cc' ? 'CC-'
+        : callerType === 'agy' ? 'AGY-'
+        : agentId.includes('-') ? agentId.split('-')[0] + '-' : null;
+
+    let parts = [primary];
+    if (platformPrefix) {
+        try {
+            const others = getAgentsByPlatformStatus(db, platformPrefix)
+                .filter(a => a.agent_id !== agentId && a.unread > 0);
+            for (const a of others) {
+                parts.push(`🔴${a.unread}·${a.agent_id}`);
+            }
+        } catch (_) {}
+    }
+
+    process.stdout.write(parts.join(' | ') + '\n');
 }
 
 process.exit(0);
