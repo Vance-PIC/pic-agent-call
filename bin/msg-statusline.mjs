@@ -14,17 +14,24 @@ try {
     process.exit(0);
 }
 
-const sessionId = resolveSessionId();
+// 從 env var 判斷 caller：CC 傳 CLAUDE_CODE_SESSION_ID，AGY 傳 ANTIGRAVITY_CONVERSATION_ID
+const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
+    : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
+    : null;
+
+const sessionId = resolveSessionId(callerType);
 let reg = getRegistration(db, sessionId);
 
-// fallback：掃 agent-sessions/cc-*.json 取最新檔的 agent_id
+// fallback：掃 agent-sessions/ 取最新檔，依 callerType 限制 prefix 避免跨 LLM 污染
 if (!reg) {
     try {
         const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
         if (fs.existsSync(sessionDir)) {
-            // 必須同時掃描 cc- 和 agy-，因為此狀態列為 Claude Code 與 Antigravity(Gemini) 共享
+            const prefixes = callerType === 'cc' ? ['cc-']
+                : callerType === 'agy' ? ['agy-']
+                : ['cc-', 'agy-'];
             const files = fs.readdirSync(sessionDir)
-                .filter(f => (f.startsWith('cc-') || f.startsWith('agy-')) && f.endsWith('.json'));
+                .filter(f => prefixes.some(p => f.startsWith(p)) && f.endsWith('.json'));
             let newest = null;
             let newestMtime = 0;
             for (const f of files) {

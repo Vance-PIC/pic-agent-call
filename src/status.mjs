@@ -28,12 +28,25 @@ function detectActiveAgyConversationId() {
 }
 
 // 解析當前 session_id（MCP server 啟動後繼承 parent env）
-export function resolveSessionId() {
-    return process.env.CLAUDE_CODE_SESSION_ID      // CC
-        || process.env.ANTIGRAVITY_CONVERSATION_ID  // AGY
-        || detectActiveAgyConversationId()          // 動態偵測 AGY 對話 ID
-        || process.env.AGENT_SESSION_ID             // 通用
-        || `${os.hostname()}-${process.pid}`;       // fallback
+// callerType: 'cc' | 'agy' | null — 限制只查對應平台的 env var，避免跨 LLM 污染
+export function resolveSessionId(callerType) {
+    if (callerType === 'cc') {
+        return process.env.CLAUDE_CODE_SESSION_ID
+            || process.env.AGENT_SESSION_ID
+            || `${os.hostname()}-${process.pid}`;
+    }
+    if (callerType === 'agy') {
+        return process.env.ANTIGRAVITY_CONVERSATION_ID
+            || detectActiveAgyConversationId()
+            || process.env.AGENT_SESSION_ID
+            || `${os.hostname()}-${process.pid}`;
+    }
+    // MCP server / 通用 context：保留完整 fallback 鏈
+    return process.env.CLAUDE_CODE_SESSION_ID
+        || process.env.ANTIGRAVITY_CONVERSATION_ID
+        || detectActiveAgyConversationId()
+        || process.env.AGENT_SESSION_ID
+        || `${os.hostname()}-${process.pid}`;
 }
 
 // 查詢 session 是否已有 registration
