@@ -54,6 +54,22 @@
     3.  **系統訊息豁免**：
         *   僅限伺服器內部觸發的背景系統清理（如逾時自動釋放任務），可以使用 `SYSTEM` 作為 `sender` 寫入。
 
+### 🚀 方案 E：任務負載提升與超時主動清理
+*   **調整目標**：支持傳遞更大體積的程式碼 diff 或長篇分析報告，並在 Agent 崩潰或非預期斷線時，主動釋放其佔用的任務。
+*   **規格修改**：
+    1.  **提升 Payload/Result 上限**：
+        *   將 `tasks` 資料表中 `payload` 與 `result` 的欄位長度上限，由 `64KB` 提升至 `1MB`。
+    2.  **基於心跳的任務釋放 (Task Auto-Release)**：
+        *   利用現有的 Agent 心跳更新（每次 `getAgentStatus` 被呼叫時會更新 `last_seen`）。
+        *   在任何任務查詢（如 `list_pending_tasks`）或認領（`claim_task`）時，系統底層會自動檢索目前所有狀態為 `claimed` 的任務。
+        *   比對認領該任務之 Agent 的 `last_seen` 時間戳記。若超時時間（`last_seen` 距今大於 `agent_timeout_sec`，預設為 120 秒）已過，自動將該任務狀態重設為 `pending`，並清空 `claimed_by` 與 `claimed_at`。
+
+### 📘 方案 F：TypeScript 支援 (index.d.ts)
+*   **調整目標**：為協同開發者提供良好的 IDE 自動補全與靜態型別檢查支援。
+*   **規格修改**：
+    1.  **新增宣告檔**：
+        *   在專案根目錄下建立 `index.d.ts` 定義檔，為導出之業務邏輯介面（如 `setup`, `sendMessage`, `getAgentStatus` 等）聲明完整型別。
+
 ---
 
 ## 📅 2. 完工標準 (DoD)

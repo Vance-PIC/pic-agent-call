@@ -44,6 +44,13 @@ export function getRegistration(db, sessionId) {
     ).get(sessionId) || null;
 }
 
+// 用 agent_id 查詢 registration（給 statusline fallback 用）
+export function getRegistrationByAgentId(db, agentId) {
+    return db.prepare(
+        'SELECT agent_id, role, session_id FROM agents WHERE agent_id = ?'
+    ).get(agentId) || null;
+}
+
 // 查詢 agent_id 是否被其他 session 占用
 // 回傳 { agent_id, session_id, role } | null
 export function findAgentIdConflict(db, agentId, sessionId) {

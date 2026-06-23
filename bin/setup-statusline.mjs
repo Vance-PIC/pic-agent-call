@@ -5,93 +5,85 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wrapperPath = path.join(__dirname, 'msg-statusline-wrapper.mjs');
+const wrapperCmd = `node "${wrapperPath.replace(/\\/g, '/')}"`;
 
-function setup() {
-  console.log('🚀 開始進行 Antigravity (AGY) 狀態列一鍵設定...');
+function readJsonFile(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (_) { return null; }
+}
 
-  const geminiDir = path.join(os.homedir(), '.gemini');
-  if (!fs.existsSync(geminiDir)) {
-    try {
-      fs.mkdirSync(geminiDir, { recursive: true });
-    } catch (e) {
-      console.error(`❌ 無法建立目錄 ${geminiDir}:`, e.message);
-      process.exit(1);
-    }
-  }
+function writeJsonFile(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+}
 
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function setupSettings(geminiDir) {
   const settingsPath = path.join(geminiDir, 'settings.json');
-  let settings = {};
+  const settings = readJsonFile(settingsPath) || {};
 
-  if (fs.existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      console.warn('⚠️ 讀取 settings.json 失敗，將會覆寫或重新建立:', e.message);
-    }
-  }
+  const slConfig = { enabled: true, type: 'command', command: wrapperCmd };
 
-  // 初始化 ui.footer 結構
+  // ui.footer (舊版 Antigravity CLI)
   if (!settings.ui) settings.ui = {};
   if (!settings.ui.footer) settings.ui.footer = {};
-  
-  // 設定狀態列為啟用並使用 node 執行 wrapper 絕對路徑
-  settings.ui.footer.enabled = true;
-  settings.ui.footer.type = 'command';
-  settings.ui.footer.command = `node "${wrapperPath.replace(/\\/g, '/')}"`;
+  Object.assign(settings.ui.footer, slConfig);
 
-  // 移出已停用的 watchdog-countdown，並確保預設顯示項目完整
-  if (settings.ui.footer.items) {
-    settings.ui.footer.items = settings.ui.footer.items.filter(item => item !== 'watchdog-countdown');
-  } else {
-    // 預設顯示項目
-    settings.ui.footer.items = [
-      'project-path',
-      'git-branch',
-      'model-name',
-      'quota',
-      'context-used',
-      'token-count',
-      'memory-usage'
-    ];
+  // 移除已停用的 watchdog-countdown
+  if (Array.isArray(settings.ui.footer.items)) {
+    settings.ui.footer.items = settings.ui.footer.items.filter(i => i !== 'watchdog-countdown');
   }
 
-  // 強制設定為 powerline 風格以達到最佳美觀效果
-  if (!settings.ui.footer.style) {
-    settings.ui.footer.style = 'powerline';
+  // statusLine (新版)
+  if (!settings.statusLine) settings.statusLine = {};
+  Object.assign(settings.statusLine, slConfig);
+
+  writeJsonFile(settingsPath, settings);
+  console.log(`[OK] settings: ${settingsPath}`);
+}
+
+function setupTrustedHooks(geminiDir) {
+  const hooksPath = path.join(geminiDir, 'trusted_hooks.json');
+  const hooks = readJsonFile(hooksPath) || {};
+
+  const fwdCmd = `statusLine:${wrapperCmd}`;
+  const winCmd = `statusLine:node "${wrapperPath.replace(/\//g, '\\')}"`;
+  const entries = [fwdCmd, winCmd];
+
+  let changed = false;
+  // 必須對 '*'、當前 CWD、以及 trusted_hooks.json 中所有已存在的專案 Key 都寫入信任設定。
+  // 因為在 Windows Antigravity 下，安全性檢查若發現當前專案 Key 存在，便會完全忽略 '*' 的設定。
+  const targetKeys = new Set(['*', process.cwd()]);
+  for (const k in hooks) {
+    targetKeys.add(k);
   }
 
-  try {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log(`✅ 已成功更新設定檔: ${settingsPath}`);
-  } catch (e) {
-    console.error('❌ 寫入 settings.json 失敗:', e.message);
-    process.exit(1);
-  }
-
-  // 寫入信任 Hook (trusted_hooks.json)
-  const trustedHooksPath = path.join(geminiDir, 'trusted_hooks.json');
-  let trustedHooks = [];
-  if (fs.existsSync(trustedHooksPath)) {
-    try {
-      trustedHooks = JSON.parse(fs.readFileSync(trustedHooksPath, 'utf8'));
-    } catch (_) {}
-  }
-
-  const normalizedWrapperPath = wrapperPath.replace(/\\/g, '/');
-  if (!trustedHooks.includes(normalizedWrapperPath)) {
-    trustedHooks.push(normalizedWrapperPath);
-    try {
-      fs.writeFileSync(trustedHooksPath, JSON.stringify(trustedHooks, null, 2), 'utf8');
-      console.log(`✅ 已將 wrapper 加入安全性信任清單: ${trustedHooksPath}`);
-    } catch (e) {
-      console.warn('⚠️ 無法自動加入信任清單，您可能需要手動在 trusted_hooks.json 中將其加入:', e.message);
+  for (const key of targetKeys) {
+    if (!Array.isArray(hooks[key])) hooks[key] = [];
+    for (const entry of entries) {
+      if (!hooks[key].includes(entry)) {
+        hooks[key].push(entry);
+        changed = true;
+      }
     }
   }
 
-  console.log('\n🎉 Antigravity 狀態列一鍵設定完成！請重啟終端機以套用變更。');
+  if (changed) {
+    writeJsonFile(hooksPath, hooks);
+    console.log(`[OK] trusted_hooks: ${hooksPath}`);
+  }
+}
+
+function setup() {
+  const geminiDir = path.join(os.homedir(), '.gemini');
+  ensureDir(geminiDir);
+  setupSettings(geminiDir);
+  setupTrustedHooks(geminiDir);
+  console.log('[DONE] 狀態列設定完成，請重啟終端機。');
 }
 
 setup();
