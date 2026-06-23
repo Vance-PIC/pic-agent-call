@@ -50,7 +50,8 @@ pic-agent-call/
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |
 | `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢 | src/db.mjs, node:os, node:crypto |
 | `bin/server.mjs` | MCP transport + 20 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
-| `bin/statusline.mjs` | CC statusbar hook CLI：輸出 `[agent_id\|role] 📨N` 一行後 exit 0 | src/db.mjs, src/status.mjs |
+| `bin/msg-statusline.mjs` | CC statusbar hook CLI：輸出 `[agent_id\|role] 📨N` 一行後 exit 0 | src/db.mjs, src/status.mjs |
+| `bin/msg-statusline-wrapper.mjs` | Gemini/Antigravity 狀態列整合包裝器：拼裝 Quota 狀態與 Agent 訊息狀態，包含 CWD 解析與 timeout 防卡死 | node:child_process, node:fs, node:path, node:os |
 
 ---
 
