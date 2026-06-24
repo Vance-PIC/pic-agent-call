@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )
-CREATE UNIQUE INDEX idx_agents_session_id ON agents(session_id)
+CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)
 ```
 
 **身份解析優先序**（server.mjs runtime）：
@@ -124,7 +124,7 @@ CREATE INDEX idx_acc_receiver_status ON agent_collaboration_channel(receiver, st
 - `agents` 補 `term_key` 欄位
 - `agents` 補 `session_id` 欄位
 - `agents` 補 `role` 欄位
-- `agents` 建 UNIQUE INDEX `idx_agents_session_id`
+- `agents` 物理刪除可能存在的唯一索引 `idx_agents_session_id` (`DROP INDEX IF EXISTS idx_agents_session_id`)，並改建非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`
 - entities 為空且 JSON 快照存在 → `migrateFromJson()` 自動匯入
 
 ## 孤兒訊息（ORPHANED）

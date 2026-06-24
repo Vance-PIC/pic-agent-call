@@ -45,60 +45,66 @@ export function getStats(db, dbPath) {
     };
 }
 
-export function createEntities(db, jsonPath, entities) {
-    const insertEntity = db.prepare(`INSERT OR IGNORE INTO entities (name, entityType, last_written_by) VALUES (?, ?, ?)`);
-    const insertObs    = db.prepare(`INSERT INTO observations (entity_name, observation, last_written_by) VALUES (?, ?, ?)`);
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        for (const e of entities) {
-            if (!e.name || !e.entityType) continue;
-            insertEntity.run(e.name, e.entityType, IDENTITY);
-            for (const obs of (e.observations ?? [])) insertObs.run(e.name, obs, IDENTITY);
+export async function createEntities(db, jsonPath, entities) {
+    await withRetry(() => {
+        const insertEntity = db.prepare(`INSERT OR IGNORE INTO entities (name, entityType, last_written_by) VALUES (?, ?, ?)`);
+        const insertObs    = db.prepare(`INSERT INTO observations (entity_name, observation, last_written_by) VALUES (?, ?, ?)`);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            for (const e of entities) {
+                if (!e.name || !e.entityType) continue;
+                insertEntity.run(e.name, e.entityType, IDENTITY);
+                for (const obs of (e.observations ?? [])) insertObs.run(e.name, obs, IDENTITY);
+            }
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
         }
-        db.exec('COMMIT');
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
-    }
+    });
     syncDbToJson(db, jsonPath);
 }
 
-export function addObservations(db, jsonPath, observations) {
-    const check  = db.prepare('SELECT name FROM entities WHERE name = ?');
-    const insert = db.prepare(`INSERT INTO observations (entity_name, observation, last_written_by) VALUES (?, ?, ?)`);
-    const update = db.prepare(`UPDATE entities SET version = version + 1, updated_at = datetime('now'), last_written_by = ? WHERE name = ?`);
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        for (const item of observations) {
-            if (!check.get(item.entityName)) throw new Error(`找不到指定的實體：${item.entityName}`);
-            for (const obs of item.contents) insert.run(item.entityName, obs, IDENTITY);
-            update.run(IDENTITY, item.entityName);
+export async function addObservations(db, jsonPath, observations) {
+    await withRetry(() => {
+        const check  = db.prepare('SELECT name FROM entities WHERE name = ?');
+        const insert = db.prepare(`INSERT INTO observations (entity_name, observation, last_written_by) VALUES (?, ?, ?)`);
+        const update = db.prepare(`UPDATE entities SET version = version + 1, updated_at = datetime('now'), last_written_by = ? WHERE name = ?`);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            for (const item of observations) {
+                if (!check.get(item.entityName)) throw new Error(`找不到指定的實體：${item.entityName}`);
+                for (const obs of item.contents) insert.run(item.entityName, obs, IDENTITY);
+                update.run(IDENTITY, item.entityName);
+            }
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
         }
-        db.exec('COMMIT');
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
-    }
+    });
     syncDbToJson(db, jsonPath);
 }
 
-export function createRelations(db, jsonPath, relations) {
-    const check        = db.prepare('SELECT name FROM entities WHERE name = ?');
-    const insertEntity = db.prepare(`INSERT OR IGNORE INTO entities (name, entityType, last_written_by) VALUES (?, 'unknown', ?)`);
-    const insertRel    = db.prepare(`INSERT OR IGNORE INTO relations (from_entity, to_entity, relationType, last_written_by) VALUES (?, ?, ?, ?)`);
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        for (const r of relations) {
-            if (!r.from || !r.to || !r.relationType) continue;
-            if (!check.get(r.from)) insertEntity.run(r.from, IDENTITY);
-            if (!check.get(r.to))   insertEntity.run(r.to, IDENTITY);
-            insertRel.run(r.from, r.to, r.relationType, IDENTITY);
+export async function createRelations(db, jsonPath, relations) {
+    await withRetry(() => {
+        const check        = db.prepare('SELECT name FROM entities WHERE name = ?');
+        const insertEntity = db.prepare(`INSERT OR IGNORE INTO entities (name, entityType, last_written_by) VALUES (?, 'unknown', ?)`);
+        const insertRel    = db.prepare(`INSERT OR IGNORE INTO relations (from_entity, to_entity, relationType, last_written_by) VALUES (?, ?, ?, ?)`);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            for (const r of relations) {
+                if (!r.from || !r.to || !r.relationType) continue;
+                if (!check.get(r.from)) insertEntity.run(r.from, IDENTITY);
+                if (!check.get(r.to))   insertEntity.run(r.to, IDENTITY);
+                insertRel.run(r.from, r.to, r.relationType, IDENTITY);
+            }
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
         }
-        db.exec('COMMIT');
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
-    }
+    });
     syncDbToJson(db, jsonPath);
 }
 

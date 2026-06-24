@@ -9,10 +9,21 @@ function makeDb() {
   return initDatabase(':memory:', TMP_JSON);
 }
 
+// 直接 INSERT agents（跳過 registerAgent 的 env prefix 邏輯，保持測試確定性）
+function insertAgent(db, agentId, sessionId, role = 'PG') {
+  db.prepare(
+    `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+     VALUES (?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))`
+  ).run(agentId, role, sessionId);
+}
+
+// NOTE: sendMessage(db, receiver, message, sender, sessionId, priority)
+// Tests use sender='SYSTEM' to bypass session auth validation.
+
 // ─── 1. sendMessage — 回傳 message_id，status='UNREAD' ────────────────────
-test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', () => {
+test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', async () => {
   const db = makeDb();
-  const result = sendMessage(db, 'CC-SA1', 'CC-PG1', 'hello', 5);
+  const result = await sendMessage(db, 'CC-PG1', 'hello', 'SYSTEM', null, 5);
   expect(result).toHaveProperty('message_id');
   expect(result.message_id).toMatch(/^msg-/);
   expect(result.status).toBe('UNREAD');
@@ -22,71 +33,71 @@ test('sendMessage: 回傳 message_id 且初始 status 為 UNREAD', () => {
 });
 
 // ─── 2. listUnread — 只回傳 UNREAD 訊息 ──────────────────────────────────
-test('listUnread: 只回傳 UNREAD 訊息，已讀訊息不應出現', () => {
+test('listUnread: 只回傳 UNREAD 訊息，已讀訊息不應出現', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'PG1', 'msg-unread', 5);
-  const m2 = sendMessage(db, 'SA', 'PG1', 'msg-to-claim', 5);
+  insertAgent(db, 'CC-PG1', 'sess-t2');
+  const m1 = await sendMessage(db, 'CC-PG1', 'msg-unread', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'CC-PG1', 'msg-to-claim', 'SYSTEM', null, 5);
 
-  // 搶鎖 m2，使其進入 IN_PROGRESS（不應出現在 listUnread）
-  claimMessage(db, m2.message_id, 'PG1');
+  claimMessage(db, m2.message_id, 'CC-PG1', 'sess-t2');
 
-  const result = listUnread(db, 'PG1');
+  const result = listUnread(db, 'CC-PG1', 'sess-t2');
   const ids = result.messages.map(m => m.message_id);
   expect(ids).toContain(m1.message_id);
   expect(ids).not.toContain(m2.message_id);
   db.close();
 });
 
-// ─── 3. listUnread — pool 萬用字元（receiver='CC?'）匹配 ─────────────────
-test('listUnread: pool 萬用字元 receiver="CC?" 應匹配所有 CC 前綴接收者', () => {
+// ─── 3. listUnread — receiver=null 列出 session 所有角色未讀 ─────────────
+test('listUnread: receiver=null 列出 session 所有角色聯集（含 any）', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'CC-PG1', 'for-pg1', 5);
-  const m2 = sendMessage(db, 'SA', 'CC-PG2', 'for-pg2', 5);
-  const m3 = sendMessage(db, 'SA', 'Gemini-PG1', 'for-gemini', 5);
+  insertAgent(db, 'CC-PG1', 'sess-t3');
+  const m1 = await sendMessage(db, 'CC-PG1', 'for-pg1', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'any', 'for-any', 'SYSTEM', null, 5);
 
-  const result = listUnread(db, 'CC?');
+  const result = listUnread(db, null, 'sess-t3');
   const ids = result.messages.map(m => m.message_id);
   expect(ids).toContain(m1.message_id);
   expect(ids).toContain(m2.message_id);
-  expect(ids).not.toContain(m3.message_id);
   db.close();
 });
 
-// ─── 4. listUnread — receiver='all' 回傳所有 UNREAD ─────────────────────
-test('listUnread: receiver="all" 回傳所有 UNREAD 訊息', () => {
+// ─── 4. listUnread — receiver='all' 等同 null ────────────────────────────
+test('listUnread: receiver="all" 等同 null，列出 session 聯集', async () => {
   const db = makeDb();
-  const m1 = sendMessage(db, 'SA', 'PG1', 'msg1', 5);
-  const m2 = sendMessage(db, 'SA', 'PG2', 'msg2', 5);
-  const m3 = sendMessage(db, 'SA', 'Gemini', 'msg3', 5);
+  insertAgent(db, 'CC-PG2', 'sess-t4');
+  const m1 = await sendMessage(db, 'CC-PG2', 'msg1', 'SYSTEM', null, 5);
+  const m2 = await sendMessage(db, 'any', 'msg2', 'SYSTEM', null, 5);
 
-  const result = listUnread(db, 'all');
+  const result = listUnread(db, 'all', 'sess-t4');
   const ids = result.messages.map(m => m.message_id);
   expect(ids).toContain(m1.message_id);
   expect(ids).toContain(m2.message_id);
-  expect(ids).toContain(m3.message_id);
-  expect(result.count).toBeGreaterThanOrEqual(3);
   db.close();
 });
 
 // ─── 5. claimMessage — 成功搶鎖，status → IN_PROGRESS ────────────────────
-test('claimMessage: 成功搶鎖後 status 應更新為 IN_PROGRESS', () => {
+test('claimMessage: 成功搶鎖後 status 應更新為 IN_PROGRESS', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'claimable', 5);
-  const result = claimMessage(db, m.message_id, 'PG1');
+  insertAgent(db, 'CC-PG1', 'sess-t5');
+  const m = await sendMessage(db, 'CC-PG1', 'claimable', 'SYSTEM', null, 5);
+  const result = claimMessage(db, m.message_id, 'CC-PG1', 'sess-t5');
   expect(result.success).toBe(true);
   expect(result.message_id).toBe(m.message_id);
   const row = db.prepare('SELECT status, lock_owner FROM agent_collaboration_channel WHERE message_id = ?').get(m.message_id);
   expect(row.status).toBe('IN_PROGRESS');
-  expect(row.lock_owner).toBe('PG1');
+  expect(row.lock_owner).toBe('CC-PG1');
   db.close();
 });
 
 // ─── 6. claimMessage — 重複搶鎖回傳 success:false ────────────────────────
-test('claimMessage: 已搶鎖訊息再次搶鎖應回傳 success:false', () => {
+test('claimMessage: 已搶鎖訊息再次搶鎖應回傳 success:false', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'double-claim', 5);
-  claimMessage(db, m.message_id, 'PG1'); // 第一次搶鎖
-  const result = claimMessage(db, m.message_id, 'PG2'); // 第二次搶鎖
+  insertAgent(db, 'CC-PG1', 'sess-t6a');
+  insertAgent(db, 'CC-PG2', 'sess-t6b');
+  const m = await sendMessage(db, 'CC-PG1', 'double-claim', 'SYSTEM', null, 5);
+  claimMessage(db, m.message_id, 'CC-PG1', 'sess-t6a');
+  const result = claimMessage(db, m.message_id, 'CC-PG2', 'sess-t6b');
   expect(result.success).toBe(false);
   db.close();
 });
@@ -94,18 +105,20 @@ test('claimMessage: 已搶鎖訊息再次搶鎖應回傳 success:false', () => {
 // ─── 7. claimMessage — 不存在的 message_id 回傳 success:false ────────────
 test('claimMessage: 不存在的 message_id 應回傳 success:false', () => {
   const db = makeDb();
-  const result = claimMessage(db, 'msg-nonexistent-uuid', 'PG1');
+  insertAgent(db, 'CC-PG1', 'sess-t7');
+  const result = claimMessage(db, 'msg-nonexistent-uuid', 'CC-PG1', 'sess-t7');
   expect(result.success).toBe(false);
   expect(result.reason).toMatch(/not found/i);
   db.close();
 });
 
 // ─── 8. ackMessage — 正確 owner ACK，status → READ ───────────────────────
-test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', () => {
+test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'to-ack', 5);
-  claimMessage(db, m.message_id, 'PG1');
-  const result = ackMessage(db, m.message_id, 'PG1');
+  insertAgent(db, 'CC-PG1', 'sess-t8');
+  const m = await sendMessage(db, 'CC-PG1', 'to-ack', 'SYSTEM', null, 5);
+  claimMessage(db, m.message_id, 'CC-PG1', 'sess-t8');
+  const result = ackMessage(db, m.message_id, 'CC-PG1', 'sess-t8');
   expect(result.success).toBe(true);
   expect(result.message_id).toBe(m.message_id);
   const row = db.prepare('SELECT status FROM agent_collaboration_channel WHERE message_id = ?').get(m.message_id);
@@ -114,12 +127,82 @@ test('ackMessage: 正確 owner ACK 後 status 應更新為 READ', () => {
 });
 
 // ─── 9. ackMessage — 錯誤 owner ACK 回傳 success:false ──────────────────
-test('ackMessage: 非 lock_owner 的 agent ACK 應回傳 success:false', () => {
+test('ackMessage: 非 lock_owner 的 agent ACK 應回傳 success:false', async () => {
   const db = makeDb();
-  const m = sendMessage(db, 'SA', 'PG1', 'wrong-owner-ack', 5);
-  claimMessage(db, m.message_id, 'PG1');
-  const result = ackMessage(db, m.message_id, 'PG2'); // 錯誤 owner
+  insertAgent(db, 'CC-PG1', 'sess-t9a');
+  insertAgent(db, 'CC-PG2', 'sess-t9b');
+  const m = await sendMessage(db, 'CC-PG1', 'wrong-owner-ack', 'SYSTEM', null, 5);
+  claimMessage(db, m.message_id, 'CC-PG1', 'sess-t9a');
+  const result = ackMessage(db, m.message_id, 'CC-PG2', 'sess-t9b');
   expect(result.success).toBe(false);
   expect(result.reason).toBeTruthy();
+  db.close();
+});
+
+// ─── Spec 9: sendMessage all 廣播 ────────────────────────────────────────
+test('sendMessage: receiver=all 廣播給所有 active agents（排除 sender）', async () => {
+  const db = makeDb();
+  insertAgent(db, 'AGT-B', 'sess-all-b', 'SA');
+  insertAgent(db, 'AGT-C', 'sess-all-c', 'QA');
+  const result = await sendMessage(db, 'all', 'broadcast!', 'SYSTEM', null, 5);
+  expect(result.count).toBeGreaterThanOrEqual(2);
+  expect(Array.isArray(result.message_ids)).toBe(true);
+  db.close();
+});
+
+// ─── Spec 9: sendMessage any 寫入單筆 receiver=any ───────────────────────
+test('sendMessage: receiver=any 寫入單筆 receiver=any 記錄', async () => {
+  const db = makeDb();
+  const result = await sendMessage(db, 'any', 'first-come', 'SYSTEM', null, 5);
+  expect(result.status).toBe('UNREAD');
+  const row = db.prepare('SELECT receiver FROM agent_collaboration_channel WHERE message_id = ?').get(result.message_id);
+  expect(row.receiver).toBe('any');
+  db.close();
+});
+
+// ─── Spec 9: listUnread any 訊息對有效角色可見 ───────────────────────────
+test('listUnread: receiver=any 的訊息在 session 聯集查詢中可見', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-PG1', 'sess-any-vis');
+  const m = await sendMessage(db, 'any', 'any-msg', 'SYSTEM', null, 5);
+
+  const result = listUnread(db, null, 'sess-any-vis');
+  const ids = result.messages.map(x => x.message_id);
+  expect(ids).toContain(m.message_id);
+  db.close();
+});
+
+// ─── Spec 9: claimMessage 越權拒絕（非本 session 角色）─────────────────
+test('claimMessage: 非 session 活躍角色嘗試搶鎖應回傳 403', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-SA1', 'sess-sec-a', 'SA');
+  const m = await sendMessage(db, 'CC-SA1', 'sa-only', 'SYSTEM', null, 5);
+
+  const result = claimMessage(db, m.message_id, 'CC-PG1', 'sess-sec-a');
+  expect(result.success).toBe(false);
+  expect(result.reason).toMatch(/403/);
+  db.close();
+});
+
+// ─── Spec 9: ackMessage 越權拒絕 ─────────────────────────────────────────
+test('ackMessage: 非活躍角色不可 ACK 他人訊息', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-PG1', 'sess-sec-b');
+  const m = await sendMessage(db, 'CC-PG1', 'pg-msg', 'SYSTEM', null, 5);
+  claimMessage(db, m.message_id, 'CC-PG1', 'sess-sec-b');
+
+  const result = ackMessage(db, m.message_id, 'CC-SA1', 'sess-other');
+  expect(result.success).toBe(false);
+  db.close();
+});
+
+// ─── Spec 9: listUnread 越權拒絕 ─────────────────────────────────────────
+test('listUnread: 指定不屬於 session 的 receiver 拋出 403', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-PG1', 'sess-sec-c');
+
+  expect(() => {
+    listUnread(db, 'CC-SA1', 'sess-sec-c');
+  }).toThrow('403');
   db.close();
 });

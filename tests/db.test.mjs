@@ -185,7 +185,7 @@ describe('syncDbToJson()', () => {
     rimraf(tmpDir);
   });
 
-  test('7. writes correct JSON Lines format', () => {
+  test('7. writes correct JSON Lines format', async () => {
     // Insert one entity with two observations
     db.exec(`
       INSERT INTO entities (name, entityType, last_written_by)
@@ -199,6 +199,9 @@ describe('syncDbToJson()', () => {
 
     const jsonPath = path.join(tmpDir, 'out.json');
     syncDbToJson(db, jsonPath);
+
+    // syncDbToJson is debounced 600ms — wait for the async write to complete
+    await new Promise(r => setTimeout(r, 800));
 
     const raw   = fs.readFileSync(jsonPath, 'utf8');
     const lines = raw.trim().split('\n').filter(Boolean);

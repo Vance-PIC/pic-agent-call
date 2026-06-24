@@ -82,9 +82,9 @@ test('getStats: 回傳正確 entities/relations/observations 計數', async () =
 });
 
 // ─── 6. createEntities — 批次建立，同名 ignore ────────────────────────────
-test('createEntities: 批次建立，同名實體只保留一筆', () => {
+test('createEntities: 批次建立，同名實體只保留一筆', async () => {
   const { db, jsonPath } = makeDb();
-  createEntities(db, jsonPath, [
+  await createEntities(db, jsonPath, [
     { name: 'CE1', entityType: 'person', observations: ['obs-a'] },
     { name: 'CE2', entityType: 'place' },
     { name: 'CE1', entityType: 'person' }, // 重複，應 ignore
@@ -97,19 +97,19 @@ test('createEntities: 批次建立，同名實體只保留一筆', () => {
 });
 
 // ─── 7. addObservations — 實體不存在時 throw ─────────────────────────────
-test('addObservations: 實體不存在時應拋出錯誤', () => {
+test('addObservations: 實體不存在時應拋出錯誤', async () => {
   const { db, jsonPath } = makeDb();
-  expect(() => {
-    addObservations(db, jsonPath, [{ entityName: 'GhostEntity', contents: ['obs'] }]);
-  }).toThrow();
+  await expect(
+    addObservations(db, jsonPath, [{ entityName: 'GhostEntity', contents: ['obs'] }])
+  ).rejects.toThrow();
   db.close();
 });
 
 // ─── 8. addObservations — 成功新增 ────────────────────────────────────────
-test('addObservations: 實體存在時成功批次新增觀測', () => {
+test('addObservations: 實體存在時成功批次新增觀測', async () => {
   const { db, jsonPath } = makeDb();
-  createEntities(db, jsonPath, [{ name: 'AO1', entityType: 'concept' }]);
-  addObservations(db, jsonPath, [{ entityName: 'AO1', contents: ['batch-obs-1', 'batch-obs-2'] }]);
+  await createEntities(db, jsonPath, [{ name: 'AO1', entityType: 'concept' }]);
+  await addObservations(db, jsonPath, [{ entityName: 'AO1', contents: ['batch-obs-1', 'batch-obs-2'] }]);
   const obs = db.prepare('SELECT observation FROM observations WHERE entity_name = ?').all('AO1');
   expect(obs).toHaveLength(2);
   expect(obs.map(r => r.observation)).toContain('batch-obs-1');
@@ -118,9 +118,9 @@ test('addObservations: 實體存在時成功批次新增觀測', () => {
 });
 
 // ─── 9. createRelations — 建立關聯，實體不存在自動建立 ─────────────────────
-test('createRelations: 不存在的實體自動建立並建立關聯', () => {
+test('createRelations: 不存在的實體自動建立並建立關聯', async () => {
   const { db, jsonPath } = makeDb();
-  createRelations(db, jsonPath, [
+  await createRelations(db, jsonPath, [
     { from: 'Node1', to: 'Node2', relationType: 'knows' },
   ]);
   const fromEntity = db.prepare('SELECT name FROM entities WHERE name = ?').get('Node1');
@@ -134,13 +134,13 @@ test('createRelations: 不存在的實體自動建立並建立關聯', () => {
 });
 
 // ─── 10. readGraph — 回傳所有 entities + relations ────────────────────────
-test('readGraph: 回傳完整圖譜資料', () => {
+test('readGraph: 回傳完整圖譜資料', async () => {
   const { db, jsonPath } = makeDb();
-  createEntities(db, jsonPath, [
+  await createEntities(db, jsonPath, [
     { name: 'RG1', entityType: 'thing', observations: ['rg-obs'] },
     { name: 'RG2', entityType: 'thing' },
   ]);
-  createRelations(db, jsonPath, [{ from: 'RG1', to: 'RG2', relationType: 'links' }]);
+  await createRelations(db, jsonPath, [{ from: 'RG1', to: 'RG2', relationType: 'links' }]);
   const graph = readGraph(db);
   expect(Array.isArray(graph.entities)).toBe(true);
   expect(Array.isArray(graph.relations)).toBe(true);
@@ -155,9 +155,9 @@ test('readGraph: 回傳完整圖譜資料', () => {
 });
 
 // ─── 11. searchNodes — 依 name 模糊匹配 ──────────────────────────────────
-test('searchNodes: 依 name 模糊匹配回傳正確實體', () => {
+test('searchNodes: 依 name 模糊匹配回傳正確實體', async () => {
   const { db, jsonPath } = makeDb();
-  createEntities(db, jsonPath, [
+  await createEntities(db, jsonPath, [
     { name: 'Alpha-Service', entityType: 'service' },
     { name: 'Beta-Service', entityType: 'service' },
     { name: 'Gamma-DB', entityType: 'database' },
@@ -171,9 +171,9 @@ test('searchNodes: 依 name 模糊匹配回傳正確實體', () => {
 });
 
 // ─── 12. searchNodes — 依 observation 模糊匹配 ────────────────────────────
-test('searchNodes: 依 observation 內容模糊匹配回傳正確實體', () => {
+test('searchNodes: 依 observation 內容模糊匹配回傳正確實體', async () => {
   const { db, jsonPath } = makeDb();
-  createEntities(db, jsonPath, [
+  await createEntities(db, jsonPath, [
     { name: 'ObsEntity1', entityType: 'thing', observations: ['contains unique-keyword here'] },
     { name: 'ObsEntity2', entityType: 'thing', observations: ['nothing relevant'] },
   ]);

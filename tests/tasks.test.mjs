@@ -35,8 +35,8 @@ function makeDb() {
 }
 
 /** Quick shortcut: create + claim a task, return { db, task_id } */
-function createAndClaim(db, { feature = 'feat', payload = 'p', agent_id = 'agent-1' } = {}) {
-  const ct = createTask(db, feature, 'worker', payload);
+async function createAndClaim(db, { feature = 'feat', payload = 'p', agent_id = 'agent-1' } = {}) {
+  const ct = await createTask(db, feature, 'worker', payload);
   const cl = claimTask(db, ct.task_id, agent_id);
   return { task_id: ct.task_id, claimResult: cl };
 }
@@ -50,8 +50,8 @@ describe('createTask()', () => {
   afterEach(() => { try { db.close(); } catch (_) {} });
 
   // 1. 成功建立，回傳 task_id + status:'pending'
-  test('1. 成功建立任務，回傳 task_id 與 status:pending', () => {
-    const result = createTask(db, 'my-feature', 'worker-A', '{"cmd":"run"}');
+  test('1. 成功建立任務，回傳 task_id 與 status:pending', async () => {
+    const result = await createTask(db, 'my-feature', 'worker-A', '{"cmd":"run"}');
 
     expect(result.idempotent).toBe(false);
     expect(result.status).toBe('pending');
@@ -60,9 +60,9 @@ describe('createTask()', () => {
   });
 
   // 2. 相同 feature+payload 冪等，回傳 idempotent:true
-  test('2. 相同 feature+payload 重複建立，回傳 idempotent:true', () => {
-    const first  = createTask(db, 'feat-A', 'workerX', 'payload-same');
-    const second = createTask(db, 'feat-A', 'workerX', 'payload-same');
+  test('2. 相同 feature+payload 重複建立，回傳 idempotent:true', async () => {
+    const first  = await createTask(db, 'feat-A', 'workerX', 'payload-same');
+    const second = await createTask(db, 'feat-A', 'workerX', 'payload-same');
 
     expect(first.idempotent).toBe(false);
     expect(second.idempotent).toBe(true);
@@ -71,25 +71,25 @@ describe('createTask()', () => {
   });
 
   // 3. feature 為空字串，回傳 validation_error
-  test('3. feature 為空字串，回傳 validation_error', () => {
-    const result = createTask(db, '', 'workerX', 'some payload');
+  test('3. feature 為空字串，回傳 validation_error', async () => {
+    const result = await createTask(db, '', 'workerX', 'some payload');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
   });
 
   // 4. assign_to 超過 50 字元，回傳 validation_error
-  test('4. assign_to 超過 50 字元，回傳 validation_error', () => {
+  test('4. assign_to 超過 50 字元，回傳 validation_error', async () => {
     const longName = 'a'.repeat(51);
-    const result   = createTask(db, 'feat', longName, 'payload');
+    const result   = await createTask(db, 'feat', longName, 'payload');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
   });
 
   // 5. type='final'，正確儲存
-  test('5. type=final 正確儲存', () => {
-    const result = createTask(db, 'feat-final', 'worker', 'final payload', 'final');
+  test('5. type=final 正確儲存', async () => {
+    const result = await createTask(db, 'feat-final', 'worker', 'final payload', 'final');
 
     expect(result.idempotent).toBe(false);
     expect(result.type).toBe('final');
@@ -101,8 +101,8 @@ describe('createTask()', () => {
   });
 
   // 6. relay_to 設定正確傳入
-  test('6. relay_to 設定正確儲存至 DB', () => {
-    const result = createTask(db, 'feat-relay', 'worker', 'relay payload', 'task', 'next-agent');
+  test('6. relay_to 設定正確儲存至 DB', async () => {
+    const result = await createTask(db, 'feat-relay', 'worker', 'relay payload', 'task', 'next-agent');
 
     expect(result.idempotent).toBe(false);
     const row = db.prepare('SELECT relay_to FROM tasks WHERE task_id = ?').get(result.task_id);
@@ -110,16 +110,16 @@ describe('createTask()', () => {
   });
 
   // extra: feature 超過 100 字元邊界
-  test('6b. feature 超過 100 字元，回傳 validation_error', () => {
-    const result = createTask(db, 'f'.repeat(101), 'worker', 'payload');
+  test('6b. feature 超過 100 字元，回傳 validation_error', async () => {
+    const result = await createTask(db, 'f'.repeat(101), 'worker', 'payload');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
   });
 
   // extra: invalid type 回傳 validation_error
-  test('6c. 非法 type 值，回傳 validation_error', () => {
-    const result = createTask(db, 'feat', 'worker', 'payload', 'unknown-type');
+  test('6c. 非法 type 值，回傳 validation_error', async () => {
+    const result = await createTask(db, 'feat', 'worker', 'payload', 'unknown-type');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
@@ -140,9 +140,9 @@ describe('listPendingTasks()', () => {
   // On UTC+8 this makes every freshly-claimed task appear to have timed out, so
   // listPendingTasks immediately re-releases it back to 'pending'.
   // The test validates the observable contract: all tasks returned have status='pending'.
-  test('7. 回傳的任務均為 pending 狀態', () => {
-    createTask(db, 'feat', 'w', 'p1');
-    const t2 = createTask(db, 'feat', 'w', 'p2');
+  test('7. 回傳的任務均為 pending 狀態', async () => {
+    await createTask(db, 'feat', 'w', 'p1');
+    const t2 = await createTask(db, 'feat', 'w', 'p2');
     claimTask(db, t2.task_id, 'agent-x');
 
     // Directly verify t2 is claimed in DB BEFORE calling listPendingTasks
@@ -156,10 +156,10 @@ describe('listPendingTasks()', () => {
   });
 
   // 8. assign_to 過濾
-  test('8. assign_to 過濾只回傳指定 worker 的任務', () => {
-    createTask(db, 'feat', 'worker-A', 'pay-a');
-    createTask(db, 'feat', 'worker-B', 'pay-b');
-    createTask(db, 'feat', 'worker-A', 'pay-c');
+  test('8. assign_to 過濾只回傳指定 worker 的任務', async () => {
+    await createTask(db, 'feat', 'worker-A', 'pay-a');
+    await createTask(db, 'feat', 'worker-B', 'pay-b');
+    await createTask(db, 'feat', 'worker-A', 'pay-c');
 
     const { tasks, count } = listPendingTasks(db, 'worker-A');
 
@@ -168,19 +168,21 @@ describe('listPendingTasks()', () => {
   });
 
   // 9. 自動釋放逾時 claimed（模擬 claimed_at 超過 30 分鐘）
-  test('9. 自動釋放逾時 claimed 任務，使其重回 pending', () => {
-    const { task_id } = createTask(db, 'feat-timeout', 'w', 'timeout-payload');
-    // Bypass claimTask (which would be auto-released due to timezone offset) and
-    // manually insert a claimed row with localtime so the comparison is fair.
+  test('9. 自動釋放逾時 claimed 任務，使其重回 pending', async () => {
+    const { task_id } = await createTask(db, 'feat-timeout', 'w', 'timeout-payload');
+
+    // Register agent-slow with last_seen backdated so timeout SQL fires.
+    // listPendingTasks checks: agents.last_seen < now - agent_timeout_sec
+    db.prepare(
+      `INSERT OR IGNORE INTO agents (agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec)
+       VALUES ('agent-slow', datetime('now','localtime','-31 minutes'), 'offline', 120, 30)`
+    ).run();
+
+    // Set task to claimed by agent-slow
     db.prepare(
       `UPDATE tasks SET status='claimed', claimed_by='agent-slow',
        claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime')
        WHERE task_id=?`
-    ).run(task_id);
-
-    // Manually backdate claimed_at to 31 minutes ago (localtime)
-    db.prepare(
-      `UPDATE tasks SET claimed_at = datetime('now','localtime','-31 minutes') WHERE task_id = ?`
     ).run(task_id);
 
     // Verify the task is currently claimed before calling listPendingTasks
@@ -205,8 +207,8 @@ describe('claimTask()', () => {
   afterEach(() => { try { db.close(); } catch (_) {} });
 
   // 10. 成功領取，status → claimed
-  test('10. 成功領取任務，status 變為 claimed', () => {
-    const { task_id } = createTask(db, 'feat', 'worker', 'data');
+  test('10. 成功領取任務，status 變為 claimed', async () => {
+    const { task_id } = await createTask(db, 'feat', 'worker', 'data');
 
     const result = claimTask(db, task_id, 'agent-1');
 
@@ -220,8 +222,8 @@ describe('claimTask()', () => {
   });
 
   // 11. 重複領取，回傳 already_claimed
-  test('11. 重複領取同一任務，回傳 already_claimed', () => {
-    const { task_id } = createTask(db, 'feat', 'worker', 'dup');
+  test('11. 重複領取同一任務，回傳 already_claimed', async () => {
+    const { task_id } = await createTask(db, 'feat', 'worker', 'dup');
     claimTask(db, task_id, 'agent-1');
 
     const second = claimTask(db, task_id, 'agent-2');
@@ -248,10 +250,10 @@ describe('completeTask()', () => {
   afterEach(() => { try { db.close(); } catch (_) {} });
 
   // 13. 成功完成，status → completed
-  test('13. 成功完成任務，status 變為 completed', () => {
-    const ct   = createTask(db, 'feat-complete', 'worker', 'complete-payload');
+  test('13. 成功完成任務，status 變為 completed', async () => {
+    const ct   = await createTask(db, 'feat-complete', 'worker', 'complete-payload');
     claimTask(db, ct.task_id, 'agent-done');
-    const result = completeTask(db, ct.task_id, '{"ok":true}');
+    const result = await completeTask(db, ct.task_id, '{"ok":true}');
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('completed');
@@ -263,11 +265,11 @@ describe('completeTask()', () => {
   });
 
   // 14. 非 claimed 狀態，回傳 invalid_status
-  test('14. 未 claimed 的任務呼叫 completeTask，回傳 invalid_status', () => {
-    const ct = createTask(db, 'feat-pending', 'worker', 'still-pending');
+  test('14. 未 claimed 的任務呼叫 completeTask，回傳 invalid_status', async () => {
+    const ct = await createTask(db, 'feat-pending', 'worker', 'still-pending');
     // Do NOT claim — status remains 'pending'
 
-    const result = completeTask(db, ct.task_id, 'result-data');
+    const result = await completeTask(db, ct.task_id, 'result-data');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('invalid_status');
@@ -284,11 +286,11 @@ describe('failTask()', () => {
   afterEach(() => { try { db.close(); } catch (_) {} });
 
   // 15. 成功標記失敗，status → failed
-  test('15. 成功標記任務失敗，status 變為 failed', () => {
-    const ct = createTask(db, 'feat-fail', 'worker', 'fail-payload');
+  test('15. 成功標記任務失敗，status 變為 failed', async () => {
+    const ct = await createTask(db, 'feat-fail', 'worker', 'fail-payload');
     claimTask(db, ct.task_id, 'agent-fail');
 
-    const result = failTask(db, ct.task_id, 'something went wrong');
+    const result = await failTask(db, ct.task_id, 'something went wrong');
 
     expect(result.success).toBe(true);
     expect(result.status).toBe('failed');
@@ -300,22 +302,22 @@ describe('failTask()', () => {
   });
 
   // 16. fail_reason 為空，回傳 validation_error
-  test('16. fail_reason 為空字串，回傳 validation_error', () => {
-    const ct = createTask(db, 'feat', 'worker', 'payload');
+  test('16. fail_reason 為空字串，回傳 validation_error', async () => {
+    const ct = await createTask(db, 'feat', 'worker', 'payload');
     claimTask(db, ct.task_id, 'agent-1');
 
-    const result = failTask(db, ct.task_id, '');
+    const result = await failTask(db, ct.task_id, '');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
   });
 
   // extra: fail_reason 為 null，回傳 validation_error
-  test('16b. fail_reason 為 null，回傳 validation_error', () => {
-    const ct = createTask(db, 'feat', 'worker', 'p2');
+  test('16b. fail_reason 為 null，回傳 validation_error', async () => {
+    const ct = await createTask(db, 'feat', 'worker', 'p2');
     claimTask(db, ct.task_id, 'agent-1');
 
-    const result = failTask(db, ct.task_id, null);
+    const result = await failTask(db, ct.task_id, null);
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('validation_error');
@@ -331,8 +333,8 @@ describe('getTask()', () => {
   afterEach(() => { try { db.close(); } catch (_) {} });
 
   // 17. 查詢存在任務，回傳完整欄位（不含 payload_hash）
-  test('17. 查詢存在任務，回傳完整欄位且不含 payload_hash', () => {
-    const ct = createTask(db, 'feat-get', 'worker', 'get-payload');
+  test('17. 查詢存在任務，回傳完整欄位且不含 payload_hash', async () => {
+    const ct = await createTask(db, 'feat-get', 'worker', 'get-payload');
 
     const row = getTask(db, ct.task_id);
 
