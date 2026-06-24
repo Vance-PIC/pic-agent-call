@@ -44,30 +44,40 @@ function main() {
         || null;
     if (!sessionId) process.exit(0);
 
+    const wtSession = process.env.WT_SESSION || null;
+
     let db;
     try {
-        db = new DatabaseSync(dbPath, { readonly: true });
+        db = new DatabaseSync(dbPath);
+        db.exec('PRAGMA busy_timeout = 3000');
     } catch (_) {
         process.exit(0);
     }
 
     try {
+        // 一道：session_id 直查
         const reg = db.prepare(
-            'SELECT agent_id FROM agents WHERE session_id = ?'
+            'SELECT agent_id, term_key FROM agents WHERE session_id = ?'
         ).get(sessionId);
-        db.close();
-
-        if (reg) process.exit(0);
-
-        // 二道防線：DB 找不到時，改以 term_key cache 檔確認（防 MCP server session ID 不同步）
-        const termKey = `cc-${sessionId.substring(0, 8)}`;
-        const cacheFile = path.join(path.dirname(dbPath), 'agent-sessions', `${termKey}.json`);
-        if (fs.existsSync(cacheFile)) {
-            try {
-                const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-                if (data.session_id === sessionId && data.agent_id) process.exit(0);
-            } catch (_) {}
+        if (reg) {
+            // 順帶 patch：session 已登記但 term_key 尚未寫入，且有 WT_SESSION → 補寫
+            if (wtSession && !reg.term_key) {
+                try {
+                    db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ? AND term_key IS NULL')
+                      .run(wtSession, sessionId);
+                } catch (_) {}
+            }
+            db.close(); process.exit(0);
         }
+
+        // 二道：WT_SESSION 查 agents.term_key（v1.1.2+，force-register 後 session 換了仍能找到）
+        if (wtSession) {
+            const regByWt = db.prepare(
+                'SELECT agent_id FROM agents WHERE term_key = ? LIMIT 1'
+            ).get(wtSession);
+            if (regByWt) { db.close(); process.exit(0); }
+        }
+        db.close();
 
         const result = {
             decision: 'warn',
