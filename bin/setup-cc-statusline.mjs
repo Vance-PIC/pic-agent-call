@@ -17,7 +17,7 @@ function resolveGitBash() {
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
-  // 嘗試 which bash
+  // 嘗試 where bash
   try {
     const result = execFileSync('where', ['bash'], { encoding: 'utf8' }).trim().split('\n')[0].trim();
     if (result && fs.existsSync(result)) return result;
@@ -25,31 +25,29 @@ function resolveGitBash() {
   return null;
 }
 
-function setupStatusLine(claudeDir, wrapperShDest) {
-  const settingsPath = path.join(claudeDir, 'settings.json');
-  const settings = readJsonFile(settingsPath) || {};
-
+function setupStatusLine(settings, claudeDir, wrapperShDest) {
   // 已有 statusLine.command → 保留不改（wrapper.sh 已 append，不需要再改指令）
   if (settings.statusLine?.command) {
     console.log(`[SKIP] statusLine 已存在，保留原設定`);
-    return;
+    return settings;
   }
 
   const bashExe = resolveGitBash();
   if (!bashExe) {
     console.error('[WARN] 找不到 Git Bash，statusLine 設定略過。請手動設定 bash 路徑。');
-    return;
+    return settings;
   }
 
   const bashCmd = `"${bashExe}" --norc --noprofile "${wrapperShDest}"`;
   settings.statusLine = { type: 'command', command: bashCmd, refreshInterval: 5 };
 
-  writeJsonFile(settingsPath, settings);
+  const settingsPath = path.join(claudeDir, 'settings.json');
   console.log(`[OK] statusLine → ${settingsPath}`);
   console.log(`     command: ${bashCmd}`);
+  return settings;
 }
 
-function setupHooks(claudeDir, gateSrc) {
+function setupHooks(settings, claudeDir, gateSrc) {
   const hooksDir = path.join(claudeDir, 'hooks');
   ensureDir(hooksDir);
 
@@ -58,8 +56,6 @@ function setupHooks(claudeDir, gateSrc) {
   console.log(`[OK] hook → ${gateDest}`);
 
   const gateCmd = `node "${gateDest.replace(/\\/g, '/')}"`;
-  const settingsPath = path.join(claudeDir, 'settings.json');
-  const settings = readJsonFile(settingsPath) || {};
 
   if (!settings.hooks) settings.hooks = {};
 
@@ -77,7 +73,7 @@ function setupHooks(claudeDir, gateSrc) {
     console.log(`[SKIP] UserPromptSubmit hook 已存在`);
   }
 
-  writeJsonFile(settingsPath, settings);
+  return settings;
 }
 
 const PIC_MARKER = '# pic-agent-call statusline';
@@ -130,12 +126,21 @@ function setup() {
     process.exit(1);
   }
 
-  const wrapperShDest = copyWrapperSh(claudeDir);
-  setupStatusLine(claudeDir, wrapperShDest);
-  setupHooks(claudeDir, gateSrc);
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  let settings = readJsonFile(settingsPath) || {};
 
+  const wrapperShDest = copyWrapperSh(claudeDir);
+  settings = setupStatusLine(settings, claudeDir, wrapperShDest);
+  settings = setupHooks(settings, claudeDir, gateSrc);
+
+  writeJsonFile(settingsPath, settings);
   console.log('\n[DONE] CC 狀態列設定完成，請重啟 Claude Code。');
   console.log('  開發模式：設定 PIC_AGENT_DEV=1 改用本地 source tree。');
 }
 
-setup();
+try {
+  setup();
+} catch (err) {
+  console.error(`[ERR] 設定失敗：${err.message}`);
+  process.exit(1);
+}

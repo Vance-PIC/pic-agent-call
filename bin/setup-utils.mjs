@@ -14,3 +14,6 @@ export function writeJsonFile(filePath, data) {
 export function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
+
+export function toForwardSlash(p) { return p.replace(/\\/g, '/'); }
+export function toBackSlash(p) { return p.replace(/\//g, '\\'); }

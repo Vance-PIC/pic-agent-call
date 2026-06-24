@@ -3,11 +3,11 @@
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readJsonFile, writeJsonFile, ensureDir } from './setup-utils.mjs';
+import { readJsonFile, writeJsonFile, ensureDir, toForwardSlash, toBackSlash } from './setup-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wrapperPath = path.join(__dirname, 'msg-statusline-wrapper.mjs');
-const wrapperCmd = `node "${wrapperPath.replace(/\\/g, '/')}"`;
+const wrapperCmd = `node "${toForwardSlash(wrapperPath)}"`;
 
 
 function setupSettings(geminiDir) {
@@ -39,31 +39,24 @@ function setupTrustedHooks(geminiDir) {
   const hooks = readJsonFile(hooksPath) || {};
 
   const fwdCmd = `statusLine:${wrapperCmd}`;
-  const winCmd = `statusLine:node "${wrapperPath.replace(/\//g, '\\')}"`;
+  const winCmd = `statusLine:node "${toBackSlash(wrapperPath)}"`;
   const entries = [fwdCmd, winCmd];
 
-  let changed = false;
   // 必須對 '*'、當前 CWD、以及 trusted_hooks.json 中所有已存在的專案 Key 都寫入信任設定。
   // 因為在 Windows Antigravity 下，安全性檢查若發現當前專案 Key 存在，便會完全忽略 '*' 的設定。
-  const targetKeys = new Set(['*', process.cwd()]);
-  for (const k in hooks) {
-    targetKeys.add(k);
-  }
+  const targetKeys = new Set(['*', process.cwd(), ...Object.keys(hooks)]);
 
   for (const key of targetKeys) {
     if (!Array.isArray(hooks[key])) hooks[key] = [];
     for (const entry of entries) {
       if (!hooks[key].includes(entry)) {
         hooks[key].push(entry);
-        changed = true;
       }
     }
   }
 
-  if (changed) {
-    writeJsonFile(hooksPath, hooks);
-    console.log(`[OK] trusted_hooks: ${hooksPath}`);
-  }
+  writeJsonFile(hooksPath, hooks);
+  console.log(`[OK] trusted_hooks: ${hooksPath}`);
 }
 
 function setup() {
