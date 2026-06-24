@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.2] - 2026-06-24
+
+### Fixed
+- `msg-statusline.mjs`: 優先用 `WT_SESSION` 查 `agents.term_key` 修正 `--force` 後 statusline 消失
+- `register_agent`: 加 `wt_session` 可選參數，直接寫入 DB `term_key` 欄（跨 CC 重啟不變）
+- `statusline-wrapper.sh`: 改用 `cat` 讀 stdin（修正 Git Bash 啟動慢 timeout 問題）
+
+### Changed
+- `getRegistration`: delegate to `getRegistrations()[0] ?? null`（消除重複 SQL）
+- `getAgentsByPlatformStatus`: 移出 `db.prepare()` 出 `.map()`；pool receiver `'all'` → `'any'`
+- 抽出 `bin/setup-utils.mjs` 共用 `readJsonFile`/`writeJsonFile`/`ensureDir`；`setup-agy` 修正缺少 trailing `\n`
+
+---
+
 ## [1.1.1] - 2026-06-24
 
 ### Fixed
