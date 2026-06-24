@@ -355,8 +355,9 @@ describe('getAgentStatus()', () => {
 
     const result = getAgentStatus(db, 'sess-status-3');
 
-    // 格式：▶🔴3·CC-PG2（單角色，唯一角色為 primary）
-    expect(result.display).toBe('▶🔴3·CC-PG2');
+    // 格式：▶🔴3·CC-PG2（▶ 含黃色 ANSI，單角色，唯一角色為 primary）
+    expect(result.display).toContain('🔴3·CC-PG2');
+    expect(result.display).toContain('▶');
   });
 
   // 19. any 訊息計入 unread
@@ -546,8 +547,9 @@ describe('registerAgent() Spec 10 多角色', () => {
 
     const result = getAgentStatus(db, 'sess-disp', 'CC-PG1');
 
-    // ▶ 在 CC-PG1；CC-SA1 有 1 unread
-    expect(result.display).toContain('▶🟢0·CC-PG1');
+    // ▶ 在 CC-PG1（含 ANSI）；CC-SA1 有 1 unread
+    expect(result.display).toContain('🟢0·CC-PG1');
+    expect(result.display).toContain('▶');
     expect(result.display).toContain('🔴1·CC-SA1');
     expect(result.display).toContain('  '); // 兩空格分隔
     expect(result.registered_agents.length).toBe(2);

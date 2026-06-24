@@ -215,13 +215,17 @@ server.tool('channel_ack',
 // ── Agent 身份管理 ────────────────────────────────────────────────────────────
 
 function resolveTermKey() {
-    const sessionId = resolveSessionId();
-    if (sessionId.startsWith('cc-')) return `cc-${sessionId.slice(3, 11)}`;
-    if (sessionId.startsWith('agy-')) return `agy-${sessionId.slice(4, 12)}`;
-    if (sessionId.length === 36) {
-        if (process.env.CLAUDE_CODE_SESSION_ID) return `cc-${sessionId.slice(0, 8)}`;
-        return `agy-${sessionId.slice(0, 8)}`;
+    // 兩平台（CC/AGY）都繼承 WT_SESSION（Windows Terminal tab GUID，跨 LLM 重啟不變）
+    const wt = process.env.WT_SESSION;
+    if (wt && wt.length >= 8) {
+        const prefix = process.env.CLAUDE_CODE_SESSION_ID ? 'cc' : 'agy';
+        return `${prefix}-${wt.slice(0, 8)}`;
     }
+    // fallback：用 session_id 前 8 碼
+    const sessionId = resolveSessionId();
+    if (process.env.CLAUDE_CODE_SESSION_ID) return `cc-${sessionId.slice(0, 8)}`;
+    if (sessionId.startsWith('agy-')) return `agy-${sessionId.slice(4, 12)}`;
+    if (sessionId.length === 36) return `agy-${sessionId.slice(0, 8)}`;
     return `ppid-${process.ppid}`;
 }
 
@@ -259,8 +263,9 @@ server.tool('register_agent',
         agent_id: z.string().min(1).max(200).describe('代理人識別碼，支援多角色（逗號/頓號分隔），例如 CC-PG1 或 PJM、PDM、SA'),
         role: z.string().max(50).optional().describe('角色標籤，單角色時覆蓋自動推導結果'),
         force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
+        wt_session: z.string().optional().describe('呼叫端的 Windows Terminal WT_SESSION GUID（process.env.WT_SESSION）。傳入後 server 會以 wt_session[:8] 額外寫一份 cache，讓 statusline hook 能透過 WT_SESSION 找到正確的 agent 身份。'),
     },
-    async ({ agent_id, role, force }) => {
+    async ({ agent_id, role, force, wt_session }) => {
         const sessionId = resolveSessionId();
 
         // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
@@ -279,7 +284,9 @@ server.tool('register_agent',
             }
         }
 
-        const result = registerAgent(db, sessionId, agent_id, role, !!force);
+        // wt_session 有值時直接用作 term_key 寫進 DB（WT_SESSION 跨 CC 重啟不變）
+        const termKeyForDb = wt_session || null;
+        const result = registerAgent(db, sessionId, agent_id, role, !!force, termKeyForDb);
         if (!result.success) return textJson(result);
 
         // force 接管：同步更新被接管的舊 session cache（移除被搶走的 agent_id）
@@ -313,6 +320,16 @@ server.tool('register_agent',
         const allRegs = getRegistrations(db, sessionId);
         const allIds = allRegs.map(r => r.agent_id);
         writeAgentSessionCache(primaryId, allIds, sessionId, termKey);
+
+        // 若 AI 傳入 wt_session，額外以 wt_session[:8] 寫一份 cache
+        // 這讓 msg-statusline.mjs 可以用 WT_SESSION env 找到對應的 cache 檔
+        if (wt_session && wt_session.length >= 8) {
+            const prefix = process.env.CLAUDE_CODE_SESSION_ID ? 'cc' : 'agy';
+            const wtTermKey = `${prefix}-${wt_session.slice(0, 8)}`;
+            if (wtTermKey !== termKey) {
+                writeAgentSessionCache(primaryId, allIds, sessionId, wtTermKey);
+            }
+        }
 
         return textJson({ ...result, term_key: termKey });
     }

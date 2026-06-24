@@ -167,20 +167,22 @@ function _parseAgentIds(rawAgentId, sessionId) {
 }
 
 // Upsert agent registration
-// v1.1.0：支援多角色解析（逗號/頓號/分號/斜線/空格分隔）
+// v1.1.0：支援多角色解析（逗號/頓號/分須/斜線/空格分隔）
+// v1.1.2：加 termKey 參數，寫入 agents.term_key（傳入 WT_SESSION，跨 session 重啟穩定）
 // 回傳 { success, registered_agents, session_id, forced?, orphans_notified? }
-export function registerAgent(db, sessionId, agentId, role, forced = false) {
+export function registerAgent(db, sessionId, agentId, role, forced = false, termKey = null) {
     const parsed = _parseAgentIds(agentId, sessionId);
 
     let totalOrphans = 0;
     const registeredAgents = [];
 
     const upsertStmt = db.prepare(
-        `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-         VALUES (?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))
+        `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))
          ON CONFLICT(agent_id) DO UPDATE SET
              role = excluded.role,
              session_id = excluded.session_id,
+             term_key = excluded.term_key,
              last_seen = excluded.last_seen,
              status = 'active',
              updated_at = excluded.updated_at`
@@ -211,7 +213,7 @@ export function registerAgent(db, sessionId, agentId, role, forced = false) {
             }
         }
 
-        upsertStmt.run(aid, finalRole || null, sessionId);
+        upsertStmt.run(aid, finalRole || null, sessionId, termKey || null);
         registeredAgents.push({ agent_id: aid, role: finalRole || null });
     }
 
