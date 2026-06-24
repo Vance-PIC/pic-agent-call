@@ -5,21 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readJsonFile, writeJsonFile, ensureDir } from './setup-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function readJsonFile(filePath) {
-  if (!fs.existsSync(filePath)) return null;
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (_) { return null; }
-}
-
-function writeJsonFile(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
 
 function resolveGitBash() {
   const candidates = [

@@ -1,26 +1,14 @@
 #!/usr/bin/env node
 // 一鍵安裝/設定 Antigravity 狀態列 Hook
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { readJsonFile, writeJsonFile, ensureDir } from './setup-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wrapperPath = path.join(__dirname, 'msg-statusline-wrapper.mjs');
 const wrapperCmd = `node "${wrapperPath.replace(/\\/g, '/')}"`;
 
-function readJsonFile(filePath) {
-  if (!fs.existsSync(filePath)) return null;
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (_) { return null; }
-}
-
-function writeJsonFile(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
 
 function setupSettings(geminiDir) {
   const settingsPath = path.join(geminiDir, 'settings.json');

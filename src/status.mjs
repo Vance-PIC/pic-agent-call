@@ -68,9 +68,7 @@ export function resolveSessionId(callerType) {
 // 查詢 session 是否已有 registration（單一，向下相容）
 // 回傳 { agent_id, role, session_id } | null
 export function getRegistration(db, sessionId) {
-    return db.prepare(
-        'SELECT agent_id, role, session_id FROM agents WHERE session_id = ? ORDER BY created_at ASC'
-    ).get(sessionId) || null;
+    return getRegistrations(db, sessionId)[0] ?? null;
 }
 
 // v1.1.0 多角色：查詢 session 所有已註冊的活躍角色
@@ -307,20 +305,20 @@ export function getAgentsByPlatformStatus(db, platformPrefix) {
         `SELECT agent_id, role, status FROM agents WHERE agent_id LIKE ?`
     ).all(`${platformPrefix}%`);
 
+    const withPoolStmt = db.prepare(
+        `SELECT COUNT(*) as count FROM agent_collaboration_channel
+         WHERE status = 'UNREAD' AND (receiver = ? OR receiver = ? OR receiver = 'any')`
+    );
+    const noPoolStmt = db.prepare(
+        `SELECT COUNT(*) as count FROM agent_collaboration_channel
+         WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'any')`
+    );
+
     return agents.map(({ agent_id, role, status }) => {
         const pool = role ? `${role}?` : null;
-        let row;
-        if (pool) {
-            row = db.prepare(
-                `SELECT COUNT(*) as count FROM agent_collaboration_channel
-                 WHERE status = 'UNREAD' AND (receiver = ? OR receiver = ? OR receiver = 'all')`
-            ).get(agent_id, pool);
-        } else {
-            row = db.prepare(
-                `SELECT COUNT(*) as count FROM agent_collaboration_channel
-                 WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'all')`
-            ).get(agent_id);
-        }
+        const row = pool
+            ? withPoolStmt.get(agent_id, pool)
+            : noPoolStmt.get(agent_id);
         return { agent_id, role: role || null, status, unread: row?.count || 0 };
     });
 }
