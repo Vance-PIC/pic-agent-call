@@ -49,6 +49,14 @@ if (!regs || regs.length === 0) {
     exitNoAgent();
 }
 
+// 自動 patch：session 已登記但 term_key IS NULL，補寫 WT_SESSION（CC + AGY 都適用）
+if (wtSession && regs.some(r => !r.term_key)) {
+    try {
+        db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ? AND term_key IS NULL')
+          .run(wtSession, querySessionId);
+    } catch (_) {}
+}
+
 const status = getAgentStatus(db, querySessionId, primaryAgentId);
 if (!status) {
     exitNoAgent();
