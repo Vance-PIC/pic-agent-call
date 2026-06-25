@@ -14,8 +14,8 @@ if [ -f "$_coralline" ]; then
 fi
 
 # pic-agent-call — 背景跑
-_pac_bin_dev="${cwd}/bin/msg-statusline.mjs"
-_pac_bin_global="$HOME/AppData/Roaming/npm/node_modules/@pic-ai/pic-agent-call/bin/msg-statusline.mjs"
+_pac_bin_dev="${cwd}/bin/agent-statusline.mjs"
+_pac_bin_global="$HOME/AppData/Roaming/npm/node_modules/@pic-ai/pic-agent-call/bin/agent-statusline.mjs"
 _pac_bin=""
 if [ -n "$PIC_AGENT_DEV" ] && [ -f "$_pac_bin_dev" ]; then _pac_bin="$_pac_bin_dev"
 elif [ -f "$_pac_bin_global" ]; then _pac_bin="$_pac_bin_global"

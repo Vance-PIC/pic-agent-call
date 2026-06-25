@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { withRetry } from './db.mjs';
-import { getRegistrations, resolveSessionId } from './status.mjs';
+import { getRegistrations, getRegistrationsByTermKey, resolveSessionId } from './status.mjs';
 
 // v1.1.0 sendMessage
 // receiver === 'all': 廣播，對每個活躍 agent（排除 sender）各寫一筆
@@ -143,15 +143,25 @@ export function listUnread(db, receiver, sessionId) {
 // - agent_id 必須與 sessionId 當前活躍角色吻合
 // - 訊息 receiver 須為該 agent_id / role? / 'any'
 export function claimMessage(db, message_id, agent_id, sessionId) {
+    // 取得當前活躍主身份（DB term_key 查詢，fallback 至 sessionId）
+    const wtSession = process.env.WT_SESSION;
+    let primaryAgentId = null;
+    if (wtSession) {
+        const termRegs = getRegistrationsByTermKey(db, wtSession);
+        if (termRegs && termRegs.length > 0) primaryAgentId = termRegs[0].agent_id;
+    }
+    if (!primaryAgentId) {
+        const sid = sessionId || resolveSessionId();
+        const regs = getRegistrations(db, sid);
+        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
+    }
+    // 若有活躍主身份，agent_id 必須吻合
+    if (primaryAgentId && agent_id !== primaryAgentId) {
+        return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
+    }
+
     const sid = sessionId || resolveSessionId();
     const regs = getRegistrations(db, sid);
-
-    if (regs && regs.length > 0) {
-        const match = regs.find(r => r.agent_id === agent_id);
-        if (!match) {
-            return { success: false, reason: `403: agent_id "${agent_id}" 不是當前 session 的活躍角色` };
-        }
-    }
 
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -194,14 +204,21 @@ export function claimMessage(db, message_id, agent_id, sessionId) {
 // v1.1.0 ackMessage
 // - agent_id 必須與 sessionId 當前活躍角色吻合且為原始搶鎖者
 export function ackMessage(db, message_id, agent_id, sessionId) {
-    const sid = sessionId || resolveSessionId();
-    const regs = getRegistrations(db, sid);
-
-    if (regs && regs.length > 0) {
-        const match = regs.find(r => r.agent_id === agent_id);
-        if (!match) {
-            return { success: false, reason: `403: agent_id "${agent_id}" 不是當前 session 的活躍角色` };
-        }
+    // 取得當前活躍主身份（DB term_key 查詢，fallback 至 sessionId）
+    const wtSession = process.env.WT_SESSION;
+    let primaryAgentId = null;
+    if (wtSession) {
+        const termRegs = getRegistrationsByTermKey(db, wtSession);
+        if (termRegs && termRegs.length > 0) primaryAgentId = termRegs[0].agent_id;
+    }
+    if (!primaryAgentId) {
+        const sid = sessionId || resolveSessionId();
+        const regs = getRegistrations(db, sid);
+        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
+    }
+    // 若有活躍主身份，agent_id 必須吻合
+    if (primaryAgentId && agent_id !== primaryAgentId) {
+        return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
     }
 
     db.exec('BEGIN IMMEDIATE');

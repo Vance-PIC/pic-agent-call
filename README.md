@@ -164,7 +164,7 @@ CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → 
 
 表示 agent `CC-SA1`，有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
 
-Claude Code 使用者可搭配 `bin/msg-statusline.mjs` 將此資訊顯示在 statusbar 中。
+Claude Code 使用者可搭配 `bin/agent-statusline.mjs` 將此資訊顯示在 statusbar 中。
 
 ### Statusline 設定指南
 
@@ -172,8 +172,8 @@ Claude Code 使用者可搭配 `bin/msg-statusline.mjs` 將此資訊顯示在 st
 - **註冊身份**：在啟用狀態列之前，當前 AI Session 必須先呼叫 `register_agent` 成功登記身份（`agent_id` + `role`）。
 - **啟用 MCP 伺服器**：MCP 伺服器 `pic-agent-call` 必須已正確載入，且在各平台的啟用列表（如 `enabledMcpjsonServers` 或設定檔）中。
 
-#### 2. bin/msg-statusline.mjs 說明
-`bin/msg-statusline.mjs` 是一個輕量級的查詢工具，它會執行以下操作：
+#### 2. bin/agent-statusline.mjs 說明
+`bin/agent-statusline.mjs` 是一個輕量級的查詢工具，它會執行以下操作：
 1. 自動解析當前 Session ID。
 2. 查詢 SQLite 大腦資料庫（`memory-graph.db`）中的 `agents` 表與 `agent_collaboration_channel` 通訊資料表。
 3. 取得當前代理人身份與未讀訊息數量，輸出格式為 `🟢0·CC-PG1`（有未讀時為 `🔴3·CC-PG1`），並以 `exit 0` 結束。

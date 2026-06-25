@@ -138,6 +138,8 @@ export function initDatabase(dbPath, jsonPath) {
     // v1.1.0 多角色：session_id 改非唯一索引
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_id`); } catch (_) {}
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
+    // v1.1.3 term_key 索引：statusline 優先以 WT_SESSION 直查
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {

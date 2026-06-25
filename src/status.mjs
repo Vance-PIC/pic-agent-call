@@ -176,44 +176,19 @@ function _parseAgentIds(rawAgentId, sessionId) {
 // Upsert agent registration
 // v1.1.0：支援多角色解析（逗號/頓號/分須/斜線/空格分隔）
 // v1.1.2：加 termKey 參數，寫入 agents.term_key（傳入 WT_SESSION，跨 session 重啟穩定）
-// 回傳 { success, registered_agents, session_id, forced?, orphans_notified? }
+// v1.1.3：三道防線 upsert — 一道:resume(換視窗), 二道:同視窗新session, 三道:INSERT或衝突
+// 回傳 { success, registered_agents, session_id, forced, term_key, orphans_notified? }
 export function registerAgent(db, sessionId, agentId, role, forced = false, termKey = null) {
     const parsed = _parseAgentIds(agentId, sessionId);
 
     let totalOrphans = 0;
     const registeredAgents = [];
 
-    const upsertStmt = db.prepare(
-        `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
-         VALUES (?, ?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))
-         ON CONFLICT(agent_id) DO UPDATE SET
-             role = excluded.role,
-             session_id = excluded.session_id,
-             term_key = excluded.term_key,
-             last_seen = excluded.last_seen,
-             status = 'active',
-             updated_at = excluded.updated_at`
-    );
-
-    // non-force：先全部 pre-check，無衝突才全部 INSERT（防止部分登記殘留）
-    if (!forced) {
-        for (const { agentId: aid } of parsed) {
-            const conflict = findAgentIdConflict(db, aid, sessionId);
-            if (conflict) {
-                return {
-                    success: false,
-                    reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
-                    conflict,
-                };
-            }
-        }
-    }
-
     for (const { agentId: aid, role: derivedRole } of parsed) {
         const finalRole = (parsed.length === 1 && role) ? role : derivedRole;
 
         if (forced) {
-            // 先查舊 session 孤兒，再 DELETE（順序不可倒）
+            // forced：孤兒訊息處理後強制更新（跳過三道防線衝突檢查）
             const oldRows = db.prepare(
                 `SELECT agent_id FROM agents WHERE agent_id = ? AND session_id != ?`
             ).all(aid, sessionId);
@@ -223,9 +198,77 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
             db.prepare(
                 `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
             ).run(aid, sessionId);
+
+            db.prepare(
+                `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+                 VALUES (?, ?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                     role = excluded.role,
+                     session_id = excluded.session_id,
+                     term_key = excluded.term_key,
+                     last_seen = excluded.last_seen,
+                     status = 'active',
+                     updated_at = excluded.updated_at`
+            ).run(aid, finalRole || null, sessionId, termKey || null);
+
+            registeredAgents.push({ agent_id: aid, role: finalRole || null });
+            continue;
         }
 
-        upsertStmt.run(aid, finalRole || null, sessionId, termKey || null);
+        // 一道防線：DB 中已有 agent_id = aid AND session_id = sessionId → resume（換視窗）
+        const fence1 = db.prepare(
+            `SELECT agent_id FROM agents WHERE agent_id = ? AND session_id = ?`
+        ).get(aid, sessionId);
+        if (fence1) {
+            db.prepare(
+                `UPDATE agents SET
+                     role = ?,
+                     term_key = ?,
+                     last_seen = datetime('now','localtime'),
+                     status = 'active',
+                     updated_at = datetime('now','localtime')
+                 WHERE agent_id = ? AND session_id = ?`
+            ).run(finalRole || null, termKey || null, aid, sessionId);
+            registeredAgents.push({ agent_id: aid, role: finalRole || null });
+            continue;
+        }
+
+        // 二道防線：DB 中已有 agent_id = aid AND term_key = termKey（termKey 非 null）→ 同視窗新 session
+        if (termKey) {
+            const fence2 = db.prepare(
+                `SELECT agent_id FROM agents WHERE agent_id = ? AND term_key = ?`
+            ).get(aid, termKey);
+            if (fence2) {
+                db.prepare(
+                    `UPDATE agents SET
+                         role = ?,
+                         session_id = ?,
+                         last_seen = datetime('now','localtime'),
+                         status = 'active',
+                         updated_at = datetime('now','localtime')
+                     WHERE agent_id = ? AND term_key = ?`
+                ).run(finalRole || null, sessionId, aid, termKey);
+                registeredAgents.push({ agent_id: aid, role: finalRole || null });
+                continue;
+            }
+        }
+
+        // 三道防線：兩者均不命中 → INSERT；若有衝突（其他 session 占用），拋出衝突錯誤
+        const conflict = findAgentIdConflict(db, aid, sessionId);
+        if (conflict) {
+            return {
+                success: false,
+                reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
+                conflict,
+                debug_sessionId: sessionId,
+                debug_homedir: process.env.HOME || process.env.USERPROFILE || null,
+            };
+        }
+
+        db.prepare(
+            `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+             VALUES (?, ?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))`
+        ).run(aid, finalRole || null, sessionId, termKey || null);
         registeredAgents.push({ agent_id: aid, role: finalRole || null });
     }
 
@@ -233,9 +276,10 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
         success: true,
         registered_agents: registeredAgents,
         session_id: sessionId,
+        forced: forced,
+        term_key: termKey,
     };
 
-    if (forced) result.forced = true;
     if (totalOrphans > 0) result.orphans_notified = totalOrphans;
 
     return result;

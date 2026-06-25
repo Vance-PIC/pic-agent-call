@@ -8,8 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.1.3] - 2026-06-25
 
 ### Changed
-- `bin/msg-statusline.mjs`: 主查詢改為直接以 `WT_SESSION` 查 `agents.term_key`（`getRegistrationsByTermKey`），跳過 session_id 中間層；AGY 或無 WT_SESSION 環境才 fallback 至 session_id
-- `bin/msg-statusline.mjs`: fallback 路徑補設 `primaryAgentId = regs[0].agent_id`，確保 ▶ 標示在 AGY/無 WT_SESSION 環境正確顯示
+- `bin/agent-statusline.mjs`: 主查詢改為直接以 `WT_SESSION` 查 `agents.term_key`（`getRegistrationsByTermKey`），跳過 session_id 中間層；AGY 或無 WT_SESSION 環境才 fallback 至 session_id
+- `bin/agent-statusline.mjs`: fallback 路徑補設 `primaryAgentId = regs[0].agent_id`，確保 ▶ 標示在 AGY/無 WT_SESSION 環境正確顯示
 - `src/status.mjs`: `getRegistrations()` SELECT 補入 `term_key` 欄位；新增 `getRegistrationsByTermKey(db, termKey)` API
 - `src/status.mjs`: 修正 `_parseAgentIds()` 死碼 — `isCc` 判斷從 `sessionId.startsWith('cc-')` 改為 `process.env.CLAUDE_CODE_SESSION_ID === sessionId`
 - `src/status.mjs`: `_parseAgentIds()` prefix fallback 從 `CLAUDE_CODE_SESSION_ID ? 'CC-' : 'AGY-'` 改為 `!CLAUDE_CODE_SESSION_ID ? 'AGY-' : 'CC-'`，修正 MCP context 下 AGY 短名稱永遠補 `CC-` 的錯誤
@@ -37,7 +37,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [1.1.2] - 2026-06-24
 
 ### Fixed
-- `msg-statusline.mjs`: 優先用 `WT_SESSION` 查 `agents.term_key` 修正 `--force` 後 statusline 消失
+- `agent-statusline.mjs`: 優先用 `WT_SESSION` 查 `agents.term_key` 修正 `--force` 後 statusline 消失
 - `register_agent`: 加 `wt_session` 可選參數，直接寫入 DB `term_key` 欄（跨 CC 重啟不變）
 - `statusline-wrapper.sh`: 改用 `cat` 讀 stdin（修正 Git Bash 啟動慢 timeout 問題）
 
@@ -67,7 +67,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`register_agent --force`**: 強制接管已存在的 agent_id，解決跨 session 身份衝突
 - **`setup-cc-statusline`**: CC 一鍵安裝腳本，自動偵測 Git Bash、append 模式不覆蓋既有 wrapper.sh、自動掛載 autoreg-gate hook
 - **`setup-agy-statusline`** (原 `setup-statusline`): AGY 一鍵安裝腳本，部署 `msg-statusline-wrapper.mjs` 並寫入 settings.json
-- **`msg-statusline.mjs`**: 直接查詢 SQLite DB 取得 agent 身份，不依賴跨視窗 cache 掃描
+- **`agent-statusline.mjs`**: 直接查詢 SQLite DB 取得 agent 身份，不依賴跨視窗 cache 掃描
 - **`msg-statusline-wrapper.mjs`**: AGY 專用包裝器，讀 stdin JSON 取 conversation_id，整合 quota statusline
 - **`bin/statusline-wrapper.sh`**: CC 專用 bash wrapper，coralline + pic-agent-call 並行執行，降低延遲
 - **`hooks/pic-agent-autoreg-gate.js`**: 套件內含 autoreg-gate hook 模板
@@ -90,7 +90,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `register_agent --force` 後 CC statusline 消失，需重啟 CC 視窗才恢復（下版修正）
 
 ### Removed
-- `bin/statusline.mjs`（舊版，已由 `msg-statusline.mjs` 取代）
+- `bin/statusline.mjs`（舊版，已由 `agent-statusline.mjs` 取代）
 
 ---
 

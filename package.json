@@ -5,8 +5,8 @@
   "type": "module",
   "bin": {
     "pic-agent-call": "bin/pic-agent-call.js",
-    "msg-statusline": "bin/msg-statusline.mjs",
-    "msg-statusline-wrapper": "bin/msg-statusline-wrapper.mjs",
+    "msg-statusline": "bin/agent-statusline.mjs",
+    "agent-statusline-wrapper": "bin/agent-statusline-wrapper.mjs",
     "setup-agy-statusline": "bin/setup-agy-statusline.mjs",
     "setup-cc-statusline": "bin/setup-cc-statusline.mjs"
   },
