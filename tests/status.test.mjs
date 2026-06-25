@@ -15,7 +15,7 @@ import path from 'node:path';
 let initDatabase;
 let resolveSessionId, getRegistration, getRegistrations, findAgentIdConflict;
 let registerAgent, handleOrphanedMessages, getAgentStatus;
-let cleanExpiredAgentSessionCache, _resetSessionIdCache;
+let _resetSessionIdCache;
 let getAgentsByPlatformStatus;
 
 beforeAll(async () => {
@@ -30,7 +30,6 @@ beforeAll(async () => {
   registerAgent                 = statusMod.registerAgent;
   handleOrphanedMessages        = statusMod.handleOrphanedMessages;
   getAgentStatus                = statusMod.getAgentStatus;
-  cleanExpiredAgentSessionCache = statusMod.cleanExpiredAgentSessionCache;
   _resetSessionIdCache          = statusMod._resetSessionIdCache;
   getAgentsByPlatformStatus     = statusMod.getAgentsByPlatformStatus;
 });
@@ -580,131 +579,3 @@ describe('registerAgent() Spec 10 多角色', () => {
   });
 });
 
-// ── cleanExpiredAgentSessionCache() ──────────────────────────────────────────
-
-describe('cleanExpiredAgentSessionCache()', () => {
-  let db, sessionDir;
-  let dirCounter = 0;
-
-  beforeEach(() => {
-    db = makeDb();
-    dirCounter += 1;
-    sessionDir = path.join(os.tmpdir(), `pic-agent-test-${process.pid}-${dirCounter}`, 'agent-sessions');
-    fs.mkdirSync(sessionDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    try { db.close(); } catch (_) {}
-    try { fs.rmSync(path.dirname(sessionDir), { recursive: true, force: true }); } catch (_) {}
-  });
-
-  function writeFile(name, mtimeOffset = 0) {
-    const fp = path.join(sessionDir, name);
-    fs.writeFileSync(fp, JSON.stringify({ agent_id: 'TEST', term_key: name.slice(0, -5) }), 'utf8');
-    if (mtimeOffset !== 0) {
-      const t = new Date(Date.now() + mtimeOffset);
-      fs.utimesSync(fp, t, t);
-    }
-    return fp;
-  }
-
-  function insertAgent(termKey, status, lastSeenOffset = 0) {
-    const lastSeen = new Date(Date.now() + lastSeenOffset).toISOString().replace('T', ' ').slice(0, 19);
-    db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))`
-    ).run('AGENT-' + termKey, 'PG', 'sess-' + termKey, termKey, lastSeen, status);
-  }
-
-  // 22. 不存在的目錄不報錯
-  test('22. sessionDir 不存在時靜默返回', () => {
-    expect(() => cleanExpiredAgentSessionCache(db, '/nonexistent/path/99999')).not.toThrow();
-  });
-
-  // 23. 各 prefix 最新一筆受保護不刪
-  test('23. cc- 與 agy- 各保留最新一筆', () => {
-    const OLD = -8 * 24 * 60 * 60 * 1000; // 8 天前（超過 7 天門檻）
-    writeFile('cc-old001.json', OLD);
-    writeFile('cc-new001.json'); // 最新
-    writeFile('agy-old001.json', OLD);
-    writeFile('agy-new001.json'); // 最新
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-new001.json'))).toBe(true);
-    expect(fs.existsSync(path.join(sessionDir, 'agy-new001.json'))).toBe(true);
-  });
-
-  // 24. mtime > 7 天的舊檔（非最新）應被刪除
-  test('24. 非最新且 mtime > 7 天的檔案被刪除', () => {
-    const OLD = -8 * 24 * 60 * 60 * 1000;
-    writeFile('cc-old001.json', OLD);
-    writeFile('cc-new001.json'); // 保護最新
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-old001.json'))).toBe(false);
-  });
-
-  // 25. DB 無記錄（孤兒）且 mtime > 5 分鐘應被刪除
-  test('25. 孤兒檔（DB 無記錄）且 mtime > 5 分鐘被刪除', () => {
-    const OLD = -10 * 60 * 1000; // 10 分鐘前
-    writeFile('cc-orphan1.json', OLD); // 孤兒，10 分鐘前
-    writeFile('cc-new001.json');       // 保護最新（不是孤兒考量，只是最新）
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-orphan1.json'))).toBe(false);
-  });
-
-  // 26. DB 無記錄但 mtime < 5 分鐘（剛建立）不應刪除
-  test('26. 孤兒檔但 mtime < 5 分鐘（剛建立）保留', () => {
-    writeFile('cc-fresh1.json');  // 剛建立
-    writeFile('cc-new001.json'); // 保護最新（讓 fresh1 不是最新以觸發清理邏輯）
-    // 讓 cc-new001 比 fresh1 更新
-    const t = new Date(Date.now() + 1000);
-    fs.utimesSync(path.join(sessionDir, 'cc-new001.json'), t, t);
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-fresh1.json'))).toBe(true);
-  });
-
-  // 27. DB offline 且 last_seen > 24 小時應被刪除
-  test('27. DB offline 且 last_seen > 24 小時被刪除', () => {
-    const OLD_MTIME = -2 * 24 * 60 * 60 * 1000; // 2 天前
-    const OLD_SEEN  = -25 * 60 * 60 * 1000;      // 25 小時前
-    writeFile('cc-offline1.json', OLD_MTIME);
-    insertAgent('cc-offline1', 'offline', OLD_SEEN);
-    writeFile('cc-new001.json'); // 保護最新
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-offline1.json'))).toBe(false);
-  });
-
-  // 28. DB offline 但 last_seen < 24 小時不應刪除
-  test('28. DB offline 但 last_seen < 24 小時保留', () => {
-    const OLD_MTIME = -2 * 24 * 60 * 60 * 1000;
-    const RECENT    = -1 * 60 * 60 * 1000; // 1 小時前
-    writeFile('cc-offline2.json', OLD_MTIME);
-    insertAgent('cc-offline2', 'offline', RECENT);
-    writeFile('cc-new001.json');
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-offline2.json'))).toBe(true);
-  });
-
-  // 29. DB active 的檔案不應刪除
-  test('29. DB active 的檔案保留', () => {
-    const OLD_MTIME = -2 * 24 * 60 * 60 * 1000;
-    writeFile('cc-active1.json', OLD_MTIME);
-    insertAgent('cc-active1', 'active');
-    writeFile('cc-new001.json');
-
-    cleanExpiredAgentSessionCache(db, sessionDir);
-
-    expect(fs.existsSync(path.join(sessionDir, 'cc-active1.json'))).toBe(true);
-  });
-});

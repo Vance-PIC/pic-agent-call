@@ -30,8 +30,8 @@ function main() {
     // 放行 register_agent 呼叫本身，避免雞生蛋問題
     try {
         const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-        const prompt = (input?.prompt || '').toLowerCase();
-        if (prompt.includes('register_agent') || prompt.includes('register agent')) {
+        const prompt = (input?.prompt || '').toLowerCase().trimStart();
+        if (/^register[_ ]agent\b/.test(prompt)) {
             process.exit(0);
         }
     } catch (_) {}
@@ -55,33 +55,45 @@ function main() {
     }
 
     try {
-        // 一道：session_id 直查
+        db.exec('BEGIN IMMEDIATE');
+
+        // 一道：session_id 查到 → resume 新視窗（session 同，WT 換）→ UPDATE term_key
         const reg = db.prepare(
             'SELECT agent_id, term_key FROM agents WHERE session_id = ?'
         ).get(sessionId);
         if (reg) {
-            // 順帶 patch：session 已登記但 term_key 尚未寫入，且有 WT_SESSION → 補寫
-            if (wtSession && !reg.term_key) {
-                try {
-                    db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ? AND term_key IS NULL')
-                      .run(wtSession, sessionId);
-                } catch (_) {}
+            if (wtSession && reg.term_key !== wtSession) {
+                db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ?')
+                  .run(wtSession, sessionId);
             }
+            db.exec('COMMIT');
             db.close(); process.exit(0);
         }
 
-        // 二道：WT_SESSION 查 agents.term_key（v1.1.2+，force-register 後 session 換了仍能找到）
+        // 二道：term_key 查到 → 同視窗新 session（WT 同，session 換）→ UPDATE session_id
         if (wtSession) {
             const regByWt = db.prepare(
                 'SELECT agent_id FROM agents WHERE term_key = ? LIMIT 1'
             ).get(wtSession);
-            if (regByWt) { db.close(); process.exit(0); }
+            if (regByWt) {
+                db.prepare('UPDATE agents SET session_id = ? WHERE term_key = ?')
+                  .run(sessionId, wtSession);
+                db.exec('COMMIT');
+                db.close(); process.exit(0);
+            }
         }
+        db.exec('COMMIT');
         db.close();
 
+        const idHint = sessionId ? `session=${sessionId.slice(0, 8)}` : '(unknown)';
+        const wtHint = wtSession ? `WT_SESSION=${wtSession.slice(0, 8)}` : 'WT_SESSION=未設定';
         const result = {
-            decision: 'warn',
-            reason: '[AUTO-REG] 此 session 尚未登記 Agent 身份。請先呼叫 register_agent（建議：CC-PG1/CC-SA1/CC-QA1 擇一），完成後再繼續任務。',
+            decision: 'block',
+            message: `[AUTO-REG] 找不到已登記的 Agent 角色。\n` +
+                `診斷：${idHint}，${wtHint}\n` +
+                `原因：此 session 在 DB 中無對應 session_id 也無對應 term_key。\n` +
+                `修復：請呼叫 register_agent，重新註冊角色(可多重)。\n` +
+                `範例：register_agent CC-PG1+CC-QA1`,
         };
         process.stdout.write(JSON.stringify(result) + '\n');
         process.exit(0);

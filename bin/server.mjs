@@ -5,6 +5,8 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
+const { version: _pkgVersion } = createRequire(import.meta.url)('../package.json');
 import { resolveMemoryPaths, initDatabase } from '../src/db.mjs';
 import * as memory from '../src/memory.mjs';
 import * as channel from '../src/channel.mjs';
@@ -16,7 +18,6 @@ import {
     findAgentIdConflict,
     registerAgent,
     getAgentStatus,
-    cleanExpiredAgentSessionCache,
 } from '../src/status.mjs';
 
 const { dbPath, jsonPath } = resolveMemoryPaths();
@@ -29,7 +30,7 @@ try {
     process.exit(1);
 }
 
-const server = new McpServer({ name: 'pic-agent-call', version: '1.0.0' });
+const server = new McpServer({ name: 'pic-agent-call', version: _pkgVersion });
 
 function text(str) { return { content: [{ type: 'text', text: String(str) }] }; }
 function textJson(obj) { return text(JSON.stringify(obj, null, 2)); }
@@ -66,6 +67,7 @@ server.tool('stats',
             '====================================',
             '🧠 SQLite Memory MCP 大腦統計資訊',
             '====================================',
+            `- 伺服器版本 (Version)   : ${_pkgVersion}`,
             `- 知識實體 (Entities)    : ${s.entities}`,
             `- 關係節點 (Relations)   : ${s.relations}`,
             `- 觀察記錄 (Observations): ${s.observations}`,
@@ -214,49 +216,6 @@ server.tool('channel_ack',
 
 // ── Agent 身份管理 ────────────────────────────────────────────────────────────
 
-function resolveTermKey() {
-    // 兩平台（CC/AGY）都繼承 WT_SESSION（Windows Terminal tab GUID，跨 LLM 重啟不變）
-    const wt = process.env.WT_SESSION;
-    if (wt && wt.length >= 8) {
-        const prefix = process.env.CLAUDE_CODE_SESSION_ID ? 'cc' : 'agy';
-        return `${prefix}-${wt.slice(0, 8)}`;
-    }
-    // fallback：用 session_id 前 8 碼
-    const sessionId = resolveSessionId();
-    if (process.env.CLAUDE_CODE_SESSION_ID) return `cc-${sessionId.slice(0, 8)}`;
-    if (sessionId.startsWith('agy-')) return `agy-${sessionId.slice(4, 12)}`;
-    if (sessionId.length === 36) return `agy-${sessionId.slice(0, 8)}`;
-    return `ppid-${process.ppid}`;
-}
-
-// v1.1.0：快取格式加 agent_ids 陣列 + session_id（供多角色 ▶ 識別）
-function writeAgentSessionCache(agentId, agentIds, sessionId, termKey) {
-    try {
-        const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
-        fs.mkdirSync(sessionDir, { recursive: true });
-        const filePath = path.join(sessionDir, `${termKey}.json`);
-        fs.writeFileSync(filePath, JSON.stringify({
-            agent_id: agentId,
-            agent_ids: agentIds,
-            session_id: sessionId,
-            term_key: termKey,
-            ts: new Date().toISOString(),
-        }), 'utf8');
-        cleanExpiredAgentSessionCache(db, sessionDir);
-    } catch (_) {}
-}
-
-// 從快取讀出 primary agent_id（當前活躍角色）
-function readPrimaryAgentIdFromCache(termKey) {
-    try {
-        const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
-        const filePath = path.join(sessionDir, `${termKey}.json`);
-        if (!fs.existsSync(filePath)) return null;
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        return data.agent_id || null;
-    } catch (_) { return null; }
-}
-
 server.tool('register_agent',
     '【agent】登記或更新當前 AI 視窗的身份（agent_id + role）。session_id 自動從環境變數讀取。若 agent_id 已被其他 session 占用，回傳 conflict 資訊供 AI 詢問 user。換角色時自動處理孤兒訊息並通知原始發送者。',
     {
@@ -289,49 +248,7 @@ server.tool('register_agent',
         const result = registerAgent(db, sessionId, agent_id, role, !!force, termKeyForDb);
         if (!result.success) return textJson(result);
 
-        // force 接管：同步更新被接管的舊 session cache（移除被搶走的 agent_id）
-        if (force && result.registered_agents) {
-            const takenIds = result.registered_agents.map(r => r.agent_id);
-            const sessionDir = path.join(path.dirname(dbPath), 'agent-sessions');
-            try {
-                if (fs.existsSync(sessionDir)) {
-                    for (const f of fs.readdirSync(sessionDir).filter(f => f.endsWith('.json'))) {
-                        const fp = path.join(sessionDir, f);
-                        let cacheData;
-                        try { cacheData = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (_) { continue; }
-                        if (cacheData.session_id === sessionId) continue; // 跳過自己
-                        const oldIds = Array.isArray(cacheData.agent_ids) ? cacheData.agent_ids : [cacheData.agent_id].filter(Boolean);
-                        const remaining = oldIds.filter(id => !takenIds.includes(id));
-                        if (remaining.length === 0) {
-                            fs.unlinkSync(fp); // 舊 session 已無任何角色，刪檔
-                        } else if (remaining.length !== oldIds.length) {
-                            // 更新舊 cache，主身份改為第一個剩餘角色
-                            const newPrimary = remaining.includes(cacheData.agent_id) ? cacheData.agent_id : remaining[0];
-                            fs.writeFileSync(fp, JSON.stringify({ ...cacheData, agent_id: newPrimary, agent_ids: remaining }), 'utf8');
-                        }
-                    }
-                }
-            } catch (_) {}
-        }
-
-        // 同步寫入本地快取（從 DB 查最新 session 聯集，確保 agent_ids 完整）
-        const termKey = resolveTermKey();
-        const primaryId = result.registered_agents[0].agent_id;
-        const allRegs = getRegistrations(db, sessionId);
-        const allIds = allRegs.map(r => r.agent_id);
-        writeAgentSessionCache(primaryId, allIds, sessionId, termKey);
-
-        // 若 AI 傳入 wt_session，額外以 wt_session[:8] 寫一份 cache
-        // 這讓 msg-statusline.mjs 可以用 WT_SESSION env 找到對應的 cache 檔
-        if (wt_session && wt_session.length >= 8) {
-            const prefix = process.env.CLAUDE_CODE_SESSION_ID ? 'cc' : 'agy';
-            const wtTermKey = `${prefix}-${wt_session.slice(0, 8)}`;
-            if (wtTermKey !== termKey) {
-                writeAgentSessionCache(primaryId, allIds, sessionId, wtTermKey);
-            }
-        }
-
-        return textJson({ ...result, term_key: termKey });
+        return textJson(result);
     }
 );
 
@@ -350,11 +267,7 @@ server.tool('agent_status',
             });
         }
 
-        // 從快取讀 primary agent_id（供 ▶ 標示）
-        const termKey = resolveTermKey();
-        const primaryAgentId = readPrimaryAgentIdFromCache(termKey);
-
-        const status = getAgentStatus(db, sessionId, primaryAgentId);
+        const status = getAgentStatus(db, sessionId, null);
         return textJson({
             registered: true,
             ...status,

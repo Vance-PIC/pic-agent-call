@@ -21,35 +21,27 @@ function spawnNode(args, opts) {
   });
 }
 
-const chunks = [];
-process.stdin.on('data', d => chunks.push(d));
-process.stdin.on('end', async () => {
-  const input = Buffer.concat(chunks).toString();
-  let parsed = {};
-  try { parsed = JSON.parse(input); } catch (_) {}
+// 從 env 直接讀取，不依賴 stdin（AGY CLI 不關閉 stdin，會導致掛起）
+const convId = process.env.ANTIGRAVITY_CONVERSATION_ID ?? '';
+const cwd = process.env.PWD ?? process.cwd();
+const bin = path.join(__dirname, 'msg-statusline.mjs');
+const quotaScript = path.join(homedir(), '.gemini', 'antigravity-cli', 'plugins', 'antigravity-cli-statusline', 'scripts', 'statusline-quota.mjs');
+const dbCandidate = cwd ? path.join(cwd, '.memory', 'memory-graph.db') : '';
+const memoryDbPath = dbCandidate && existsSync(dbCandidate) ? dbCandidate : (process.env.MEMORY_DB_PATH || '');
 
-  const convId = parsed?.conversation_id ?? parsed?.conversationId ?? process.env.ANTIGRAVITY_CONVERSATION_ID ?? '';
-  const cwd = parsed?.workspace?.current_dir ?? parsed?.cwd ?? '';
-  const bin = path.join(__dirname, 'msg-statusline.mjs');
-  const quotaScript = path.join(homedir(), '.gemini', 'antigravity-cli', 'plugins', 'antigravity-cli-statusline', 'scripts', 'statusline-quota.mjs');
-  const dbCandidate = cwd ? path.join(cwd, '.memory', 'memory-graph.db') : '';
-  const memoryDbPath = dbCandidate && existsSync(dbCandidate) ? dbCandidate : (process.env.MEMORY_DB_PATH || '');
+// 1 + 2 並行執行
+const [quotaOut, agentOut] = await Promise.all([
+  existsSync(quotaScript)
+    ? spawnNode([quotaScript], {})
+    : Promise.resolve(''),
+  spawnNode([bin], {
+    cwd: cwd || undefined,
+    env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: convId, MEMORY_DB_PATH: memoryDbPath },
+  }),
+]);
 
-  // 1 + 2 並行執行
-  const [quotaOut, agentOut] = await Promise.all([
-    existsSync(quotaScript)
-      ? spawnNode([quotaScript], { input })
-      : Promise.resolve(''),
-    spawnNode([bin], {
-      input,
-      cwd: cwd || undefined,
-      env: { ...process.env, ANTIGRAVITY_CONVERSATION_ID: convId, MEMORY_DB_PATH: memoryDbPath },
-    }),
-  ]);
-
-  // 3. 輸出
-  const quotaLines = quotaOut ? quotaOut.trimEnd().split('\n') : [];
-  const agentTag = isValidAgentTag(agentOut.trim()) ? agentOut.trim() : '';
-  if (quotaLines.length) process.stdout.write(quotaLines.join('\n') + '\n');
-  if (agentTag) process.stdout.write(agentTag + '\n');
-});
+// 3. 輸出
+const quotaLines = quotaOut ? quotaOut.trimEnd().split('\n') : [];
+const agentTag = isValidAgentTag(agentOut.trim()) ? agentOut.trim() : '';
+if (quotaLines.length) process.stdout.write(quotaLines.join('\n') + '\n');
+if (agentTag) process.stdout.write(agentTag + '\n');

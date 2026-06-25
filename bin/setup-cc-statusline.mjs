@@ -77,20 +77,6 @@ function setupHooks(settings, claudeDir, gateSrc) {
 }
 
 const PIC_MARKER = '# pic-agent-call statusline';
-const PIC_BLOCK = `
-${PIC_MARKER}
-_pac_bin_dev="${'$'}{cwd}/bin/msg-statusline.mjs"
-_pac_bin_global="$(npm root -g 2>/dev/null)/@pic-ai/pic-agent-call/bin/msg-statusline.mjs"
-if [ -n "$PIC_AGENT_DEV" ] && [ -f "$_pac_bin_dev" ]; then _pac_bin="$_pac_bin_dev"
-elif [ -f "$_pac_bin_global" ]; then _pac_bin="$_pac_bin_global"
-fi
-if [ -n "$_pac_bin" ]; then
-  _pac_db=""
-  if [ -n "$cwd" ] && [ -f "\${cwd}/.memory/memory-graph.db" ]; then _pac_db="\${cwd}/.memory/memory-graph.db"; fi
-  _pac_tag=$(CLAUDE_CODE_SESSION_ID="$CLAUDE_CODE_SESSION_ID" MEMORY_DB_PATH="$_pac_db" node "$_pac_bin" 2>/dev/null)
-  case "$_pac_tag" in "NO AGENT"|""|*"[未登記]"*|*"[DB ERR]"*) ;; *) printf '%s\\n' "$_pac_tag" ;; esac
-fi
-`;
 
 function copyWrapperSh(claudeDir) {
   const src = path.join(__dirname, 'statusline-wrapper.sh');
@@ -102,13 +88,14 @@ function copyWrapperSh(claudeDir) {
 
   if (fs.existsSync(dest)) {
     const existing = fs.readFileSync(dest, 'utf8');
-    if (existing.includes(PIC_MARKER)) {
-      console.log(`[SKIP] wrapper 已含 pic-agent-call block`);
+    const srcContent = fs.readFileSync(src, 'utf8');
+    if (existing === srcContent) {
+      console.log(`[SKIP] wrapper 已是最新版`);
       return dest;
     }
-    // append 到既有 wrapper 末尾
-    fs.appendFileSync(dest, PIC_BLOCK, 'utf8');
-    console.log(`[OK] pic-agent-call block appended → ${dest}`);
+    // src 已內建 pac block，直接覆蓋（不 append，防止重複）
+    fs.copyFileSync(src, dest);
+    console.log(`[OK] wrapper 已更新 → ${dest}`);
   } else {
     fs.copyFileSync(src, dest);
     console.log(`[OK] wrapper → ${dest}`);

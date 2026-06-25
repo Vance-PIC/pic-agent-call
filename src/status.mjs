@@ -72,10 +72,18 @@ export function getRegistration(db, sessionId) {
 }
 
 // v1.1.0 多角色：查詢 session 所有已註冊的活躍角色
+// 排序：updated_at DESC（最後活躍的排首位）, created_at ASC（同時登記時依輸入順序）
 export function getRegistrations(db, sessionId) {
     return db.prepare(
-        'SELECT agent_id, role, session_id FROM agents WHERE session_id = ? ORDER BY created_at ASC'
+        'SELECT agent_id, role, session_id, term_key FROM agents WHERE session_id = ? ORDER BY updated_at DESC, created_at ASC'
     ).all(sessionId);
+}
+
+// v1.1.3：直接用 term_key（WT_SESSION）查詢，跳過 session_id 中間層
+export function getRegistrationsByTermKey(db, termKey) {
+    return db.prepare(
+        'SELECT agent_id, role, session_id, term_key FROM agents WHERE term_key = ? ORDER BY updated_at DESC, created_at ASC'
+    ).all(termKey);
 }
 
 // 用 agent_id 查詢 registration（給 statusline fallback 用）
@@ -150,9 +158,10 @@ export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
 // 輸入：agentId="PJM、PDM、SA" 或 "AGY-PJM,AGY-PDM"
 // sessionId 用於決定平台前綴（CC- 或 AGY-）
 function _parseAgentIds(rawAgentId, sessionId) {
-    const isCc  = sessionId && (sessionId.startsWith('cc-') || process.env.CLAUDE_CODE_SESSION_ID === sessionId);
-    const isAgy = sessionId && (process.env.ANTIGRAVITY_CONVERSATION_ID === sessionId);
-    const prefix = isAgy ? 'AGY-' : (isCc ? 'CC-' : (process.env.CLAUDE_CODE_SESSION_ID ? 'CC-' : 'AGY-'));
+    const isCc  = sessionId && process.env.CLAUDE_CODE_SESSION_ID === sessionId;
+    const isAgy = sessionId && process.env.ANTIGRAVITY_CONVERSATION_ID === sessionId;
+    // fallback：isCc/isAgy 均 false（MCP context）時，無 CC session ID 才推 AGY-
+    const prefix = isAgy ? 'AGY-' : (isCc ? 'CC-' : (!process.env.CLAUDE_CODE_SESSION_ID ? 'AGY-' : 'CC-'));
 
     const parts = rawAgentId.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
     return parts.map(part => {
@@ -186,6 +195,20 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
              updated_at = excluded.updated_at`
     );
 
+    // non-force：先全部 pre-check，無衝突才全部 INSERT（防止部分登記殘留）
+    if (!forced) {
+        for (const { agentId: aid } of parsed) {
+            const conflict = findAgentIdConflict(db, aid, sessionId);
+            if (conflict) {
+                return {
+                    success: false,
+                    reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
+                    conflict,
+                };
+            }
+        }
+    }
+
     for (const { agentId: aid, role: derivedRole } of parsed) {
         const finalRole = (parsed.length === 1 && role) ? role : derivedRole;
 
@@ -200,15 +223,6 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
             db.prepare(
                 `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
             ).run(aid, sessionId);
-        } else {
-            const conflict = findAgentIdConflict(db, aid, sessionId);
-            if (conflict) {
-                return {
-                    success: false,
-                    reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
-                    conflict,
-                };
-            }
         }
 
         upsertStmt.run(aid, finalRole || null, sessionId, termKey || null);
@@ -323,69 +337,3 @@ export function getAgentsByPlatformStatus(db, platformPrefix) {
     });
 }
 
-const PREFIXES = ['cc-', 'agy-'];
-const MS_7D   = 7 * 24 * 60 * 60 * 1000;
-const MS_24H  = 24 * 60 * 60 * 1000;
-const MS_5M   = 5 * 60 * 1000;
-
-// 清理 agent-sessions/ 過期快取檔
-// 規則：各 prefix 保留最新一筆（fallback 用），其餘依三條件刪除
-export function cleanExpiredAgentSessionCache(db, sessionDir) {
-    try {
-        if (!fs.existsSync(sessionDir)) return;
-
-        const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.json'));
-        const now = Date.now();
-
-        // 各 prefix 找出最新 mtime（受保護，不刪）
-        const newestByPrefix = {};
-        for (const prefix of PREFIXES) {
-            let newest = null, newestMtime = 0;
-            for (const f of files) {
-                if (!f.startsWith(prefix)) continue;
-                const mt = fs.statSync(path.join(sessionDir, f)).mtimeMs;
-                if (mt > newestMtime) { newestMtime = mt; newest = f; }
-            }
-            if (newest) newestByPrefix[prefix] = newest;
-        }
-
-        for (const f of files) {
-            const prefix = PREFIXES.find(p => f.startsWith(p));
-            if (!prefix) continue;
-
-            // 保護各 prefix 最新一筆
-            if (newestByPrefix[prefix] === f) continue;
-
-            const fp = path.join(sessionDir, f);
-            const mtime = fs.statSync(fp).mtimeMs;
-            const age = now - mtime;
-
-            // 條件一：超過 7 天
-            if (age > MS_7D) { fs.unlinkSync(fp); continue; }
-
-            // 讀 cache 檔取 session_id，再查 DB 是否有任何活躍角色
-            const termKey = f.slice(0, -5);
-            let cacheSessionId = null;
-            try {
-                const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
-                cacheSessionId = data.session_id || null;
-            } catch (_) {}
-
-            // 用 session_id 查（多角色並存時 term_key 可能不在 DB agents 表）
-            const dbRow = cacheSessionId
-                ? db.prepare(`SELECT status, last_seen FROM agents WHERE session_id = ? ORDER BY last_seen DESC LIMIT 1`).get(cacheSessionId)
-                : db.prepare(`SELECT status, last_seen FROM agents WHERE term_key = ?`).get(termKey);
-
-            // 條件二：DB 無紀錄（孤兒）且超過 5 分鐘
-            if (!dbRow && age > MS_5M) { fs.unlinkSync(fp); continue; }
-
-            // 條件三：DB offline 且 last_seen 超過 24 小時
-            if (dbRow?.status === 'offline') {
-                const lastSeenMs = dbRow.last_seen
-                    ? new Date(dbRow.last_seen).getTime()
-                    : mtime;
-                if (now - lastSeenMs > MS_24H) { fs.unlinkSync(fp); continue; }
-            }
-        }
-    } catch (_) {}
-}

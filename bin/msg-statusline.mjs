@@ -4,7 +4,7 @@
 // v1.1.1：直接以 session ID 查 DB，禁止掃描 agent-sessions/ fallback
 // v1.1.2：agents.term_key 存 WT_SESSION；statusline 優先用 WT_SESSION 查 DB
 import { setup } from '../src/db.mjs';
-import { resolveSessionId, getRegistrations, getAgentStatus } from '../src/status.mjs';
+import { resolveSessionId, getRegistrationsByTermKey, getRegistrations, getAgentStatus } from '../src/status.mjs';
 
 function exitNoAgent() { process.stdout.write('NO AGENT\n'); process.exit(0); }
 
@@ -15,46 +15,37 @@ try {
     exitNoAgent();
 }
 
-const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
-    : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
-    : null;
+const wtSession = process.env.WT_SESSION;
 
-const envSessionId = resolveSessionId(callerType);
-
-// 決定查詢用的 session_id 與 primaryAgentId
-// 順序：WT_SESSION 查 agents.term_key → envSessionId 查 agents.session_id
-let querySessionId = envSessionId;
+// 主查詢：term_key（WT_SESSION）直查，跳過 session_id 中間層
+let regs = null;
+let querySessionId = null;
 let primaryAgentId = null;
 
-const wtSession = process.env.WT_SESSION;
 if (wtSession) {
     try {
-        const regByWt = db.prepare(
-            'SELECT agent_id, session_id FROM agents WHERE term_key = ? ORDER BY created_at ASC LIMIT 1'
-        ).get(wtSession);
-        if (regByWt?.session_id) {
-            querySessionId = regByWt.session_id;
-            primaryAgentId = regByWt.agent_id;
+        regs = getRegistrationsByTermKey(db, wtSession);
+        if (regs && regs.length > 0) {
+            querySessionId = regs[0].session_id;
+            primaryAgentId = regs[0].agent_id;
         }
     } catch (_) {}
 }
 
-let regs = getRegistrations(db, querySessionId);
-if ((!regs || regs.length === 0) && querySessionId !== envSessionId) {
-    regs = getRegistrations(db, envSessionId);
-    if (regs && regs.length > 0) querySessionId = envSessionId;
+// fallback：term_key 查不到，改用 session_id 查（AGY 或無 WT_SESSION 環境）
+if (!regs || regs.length === 0) {
+    const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
+        : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
+        : null;
+    querySessionId = resolveSessionId(callerType);
+    try {
+        regs = getRegistrations(db, querySessionId);
+        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
+    } catch (_) {}
 }
 
 if (!regs || regs.length === 0) {
     exitNoAgent();
-}
-
-// 自動 patch：session 已登記但 term_key IS NULL，補寫 WT_SESSION（CC + AGY 都適用）
-if (wtSession && regs.some(r => !r.term_key)) {
-    try {
-        db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ? AND term_key IS NULL')
-          .run(wtSession, querySessionId);
-    } catch (_) {}
 }
 
 const status = getAgentStatus(db, querySessionId, primaryAgentId);
