@@ -60,5 +60,12 @@ if (!status) {
     exitNoAgent();
 }
 
-process.stdout.write(status.display + '\n');
+let outStr = status.display;
+const isAgy = !!(process.env.ANTIGRAVITY_CONVERSATION_ID || (!process.env.CLAUDE_CODE_SESSION_ID && wtSession));
+if (isAgy) {
+    const parts = status.registered_agents.map(a => `${a.agent_id}(${a.unread})`);
+    outStr = `[${status.role}] ${parts.join(' ')}`;
+}
+
+process.stdout.write(outStr + '\n');
 process.exit(0);
