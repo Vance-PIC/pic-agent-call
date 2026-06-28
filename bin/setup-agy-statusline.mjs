@@ -69,8 +69,7 @@ import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-// one-shot env dump for investigation
-try { writeFileSync(homedir() + '/.gemini/debug-env.json', JSON.stringify(process.env, null, 2)); } catch (_) {}
+
 
 const target = '${targetPath}';
 const child = spawn(process.execPath, [target], { stdio: 'inherit', env: process.env });
