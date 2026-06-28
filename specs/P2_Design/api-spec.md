@@ -270,7 +270,9 @@ export function handleOrphanedMessages(
 // - 平台前綴補全：不含 AGY-/CC- 前綴的角色代碼自動根據 session_id 類型補全。
 // - forced=true 時強制接管：
 //   1. 僅更新已被其他 session 占用的 agent_id 的 session_id 與 term_key 綁定，不影響舊 session 的其他角色。
-//   2. **主角色指定**：將被 force 的 agent 設為 `is_primary = 1`，
+//   2. **孤兒訊息精準判定**：只有當被強奪的 agent 原本綁定的 `term_key` 與當前傳入的 `termKey` **不同（跨 Terminal 視窗奪取）**時，
+//      才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若 `term_key` 相同（同視窗換 session 重新登記路徑），則保留訊息不予孤兒化。
+//   3. **主角色指定**：將被 force 的 agent 設為 `is_primary = 1`，
 //      同 session 內其他所有 agent 設為 `is_primary = 0`，
 //      確保其在 getRegistrations() SQL 排序（is_primary DESC, updated_at DESC, created_at ASC）中穩定排第一，
 //      成為 primary agent（▶ 標示位置）。
