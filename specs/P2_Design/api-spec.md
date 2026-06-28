@@ -1,4 +1,4 @@
-# API Spec (L2) — pic-agent-call v1.0.0
+# API Spec (L2) — pic-agent-call v1.1.3
 
 ---
 
@@ -114,8 +114,8 @@ export function sendMessage(
 ): { message_id: string, status: 'UNREAD' }
 
 // 列出未讀（自動釋放 IN_PROGRESS > 15 分鐘 → UNREAD）
-// ⚠️ v1.1.0 安全強化：執行橫向越權檢驗。
-// - 若指定 receiver，該 receiver 必須為當前平台連線之本地快取 agent_id（當前活躍角色）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
+// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：執行橫向越權檢驗。
+// - 若指定 receiver，該 receiver 必須為當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
 // - 若 receiver 未指定或為 'all'，則自動列出該 sessionId 所綁定之所有活躍角色之未讀訊息的聯集。
 export function listUnread(
   db: DatabaseSync,
@@ -124,8 +124,8 @@ export function listUnread(
 ): { messages: Message[], count: number }
 
 // 原子搶鎖（BEGIN IMMEDIATE）
-// ⚠️ v1.1.0 安全強化：嚴格執行當前活躍身份校驗。
-// - 操作者 agent_id 必須與該 sessionId 當前活躍角色（即本地快取 agent_id）完全吻合，否則拒絕。
+// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份校驗。
+// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）完全吻合，否則拒絕。
 // - 訊息的接收者必須為該 agent_id（或其 role?、或 'any'），否則拒絕操作。
 export function claimMessage(
   db: DatabaseSync,
@@ -136,8 +136,8 @@ export function claimMessage(
  | { success: false, reason: string }
 
 // ACK 確認完成（lock_owner 須吻合）
-// ⚠️ v1.1.0 安全強化：嚴格執行當前活躍身份與搶鎖者吻合校驗。
-// - 操作者 agent_id 必須與該 sessionId 當前活躍角色（即本地快取 agent_id）完全吻合，且必須為原始搶鎖者，否則拒絕。
+// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份與搶鎖者吻合校驗。
+// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）完全吻合，且必須為原始搶鎖者，否則拒絕。
 export function ackMessage(
   db: DatabaseSync,
   message_id: string,
@@ -212,19 +212,35 @@ export function getTask(
 // 解析當前 session_id
 // 優先序：CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → hostname-pid
 // ⚠️ v1.1.0 效能優化：支援在進程記憶體中快取解析出的會話 ID，避免重複的目錄掃描與磁碟 I/O
-export function resolveSessionId(): string
+// callerType: 'cc' | 'agy' | null — 明確指定平台類型以決定讀哪個 env var；null 則自動偵測
+export function resolveSessionId(callerType?: 'cc' | 'agy' | null): string
 
-// 以 session_id 查詢 agents 表中所有已註冊的活跃角色
+// 以 session_id 查詢 agents 表中所有已註冊的活躍角色
+// 排序：is_primary DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
+// → 第一筆即為「主角色」（is_primary = 1）
 export function getRegistrations(
   db: DatabaseSync,
   sessionId: string
-): Array<{ agent_id: string, role: string, session_id: string }>
+): Array<{ agent_id: string, role: string, session_id: string, term_key: string | null, is_primary: number }>
+
+// 以 session_id 查詢第一個已登記的活躍角色（向下相容單角色版本）
+export function getRegistration(
+  db: DatabaseSync,
+  sessionId: string
+): { agent_id: string, role: string, session_id: string, term_key: string | null } | null
+
+// 以 term_key（WT_SESSION）查詢 agents 表中所有已註冊的活躍角色（v1.1.3 新增）
+// statusline 優先使用此函式識別當前視窗的活躍角色；找不到才 fallback 至 getRegistrations
+export function getRegistrationsByTermKey(
+  db: DatabaseSync,
+  termKey: string
+): Array<{ agent_id: string, role: string, session_id: string, term_key: string }>
 
 // 用 agent_id 查詢 registration（給 statusline fallback 用）
 export function getRegistrationByAgentId(
   db: DatabaseSync,
   agentId: string
-): { agent_id: string, role: string, session_id: string } | null
+): { agent_id: string, role: string, session_id: string, term_key: string | null } | null
 
 // 偵測 agent_id 被其他 session 占用
 export function findAgentIdConflict(
@@ -245,42 +261,60 @@ export function handleOrphanedMessages(
 ): number
 
 // Upsert agent registration
-// ⚠️ v1.1.0 支援多重角色註冊與平台前綴自動補全：
-// - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串（如 agentId = "PJM/PDM/SA"）。
-// - 當 agentId 內含上述分隔符號時，系統內部必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）正確分割並提取多個角色名稱。
-// - 平台前綴補全：若提取出的角色代碼不含當前平台前綴（"AGY-" 或 "CC-"），應根據當前 session_id 自動補全前綴（如 "PJM" 補全為 "AGY-PJM"），並自動將該角色（如 "PJM"）作為該 row 的 role。
-// - 在 DB 中，不再以 session_id 為 UNIQUE key 做覆寫，而是以 agent_id 作為 PRIMARY KEY 進行 upsert。
-// - 若 role 未單獨傳入，預設從拆分後的 agent_id 去除平台前綴後填入（例如 AGY-PJM 的 role 為 PJM）。
-// - forced=true 時強制接管：僅更新已被其他 session 占用的 agent_id 的綁定，不影響該舊 session 的其他角色。同時必須找出被搶角色原本所屬的舊 session 並同步修正其快取 JSON 檔中的活躍列表與主身份（若舊 session 被接管後已無活躍角色，則直接將其快取檔物理刪除），以防越權與狀態不一致。
-// - 回傳註冊結果清單或主身份資訊。
+// ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線：
+// - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串。
+// - 系統內部使用正規表達式 `/[,\/\\+，、；;\s]+/` 分割為多個角色，各自執行三道防線 upsert 邏輯：
+//   - 一道：session_id 命中 DB → UPDATE agents SET term_key = WT_SESSION（resume 換視窗）
+//   - 二道：term_key（WT_SESSION）命中 DB → UPDATE agents SET session_id = <new_session_id>（同視窗新 session）
+//   - 三道：兩者均不命中 → 若無 force，拋出 conflict 錯誤含診斷資訊
+// - 平台前綴補全：不含 AGY-/CC- 前綴的角色代碼自動根據 session_id 類型補全。
+// - forced=true 時強制接管：
+//   1. 僅更新已被其他 session 占用的 agent_id 的 session_id 與 term_key 綁定，不影響舊 session 的其他角色。
+//   2. **主角色指定**：將被 force 的 agent 設為 `is_primary = 1`，
+//      同 session 內其他所有 agent 設為 `is_primary = 0`，
+//      確保其在 getRegistrations() SQL 排序（is_primary DESC, updated_at DESC, created_at ASC）中穩定排第一，
+//      成為 primary agent（▶ 標示位置）。
+// - 回傳註冊結果清單，含 forced 與 term_key 欄位。
 export function registerAgent(
   db: DatabaseSync,
   sessionId: string,
   agentId: string,
   role?: string,
-  forced?: boolean
-): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, orphans_notified?: number }
+  forced?: boolean,
+  termKey?: string   // WT_SESSION GUID（v1.1.3）；未傳入則由內部環境變數解析
+): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }
 
 // 查詢 agent 狀態（給 statusline 用）
-// - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：主身份（當前活躍角色）固定排在首位且其前置加上 ▶ 標示，其餘角色依序並列（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
+// - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：主身份固定排在首位且其前置加上 ▶ 標示，其餘角色依序並列（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
 // - unread 為該 sessionId 下所有活躍角色未讀數之總和。
 // - registered_agents 回傳該 session 登記的所有活躍角色資訊。
+// - primaryAgentId（可選）：由 server.mjs 從快取讀出，僅用於決定 ▶ 標示位置；
+//   **不決定主角色**，主角色由 getRegistrations() SQL 的 updated_at DESC, created_at ASC 排序決定。
+//   若未傳入，fallback 為 regs[0].agent_id（與 SQL 排序一致）。
 export function getAgentStatus(
   db: DatabaseSync,
-  sessionId: string
+  sessionId: string,
+  primaryAgentId?: string | null
 ): {
-  agent_id: string, // 首選/主角色
+  agent_id: string, // 首選/主角色（regs[0]）
   role: string | null,
   unread: number,
   display: string,
   registered_agents: Array<{ agent_id: string, role: string | null, unread: number }>
 } | null
 
-// 🧹 v1.1.0 快取清理：自動清理 .memory/agent-sessions/ 目錄下的過期 JSON 檔案
-// 對各平台（cc- / agy-）保留最新修改時間的一個 fallback 檔案，其餘檔案依據聚合對比標準進行清理：
-// - 孤兒檔案（DB 無對應角色）且 mtime > 5 分鐘，一律刪除。
-// - 關聯的所有角色均為 offline 且 last_seen > 24 小時，一律刪除。
+// 查詢同平台所有已登記 agent 的未讀數（供多角色並列狀態列用）
+// platformPrefix: 'CC-' | 'AGY-'
+export function getAgentsByPlatformStatus(
+  db: DatabaseSync,
+  platformPrefix: string
+): Array<{ agent_id: string, role: string | null, status: string, unread: number }>
+
+// 🗑️ [廢棄 v1.1.3] cleanExpiredAgentSessionCache
+// agent-sessions/ 本地快取機制已廢棄，此函式不再由 register_agent 呼叫。
+// 跨 session 識別改由 DB agents.term_key 欄位與三道防線（§6.11）承擔。
+// 保留 export 供測試相容，實作體可為 no-op。
 export function cleanExpiredAgentSessionCache(
   db: DatabaseSync,
   sessionDir: string

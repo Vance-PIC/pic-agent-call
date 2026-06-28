@@ -31,7 +31,12 @@ pic-agent-call/
 │   ├── channel.mjs
 │   └── tasks.mjs
 ├── bin/
-│   └── server.mjs
+│   ├── server.mjs                    ← MCP server 入口
+│   ├── agent-statusline.mjs          ← 狀態列主程式（CC + AGY 共用）
+│   ├── agent-statusline-wrapper.mjs  ← AGY 狀態列包裝器（拼裝 Quota + Channel 狀態）
+│   ├── setup-agy-statusline.mjs     ← AGY 狀態列一鍵安裝腳本
+│   ├── setup-cc-statusline.mjs      ← CC 狀態列一鍵安裝腳本
+│   └── setup-utils.mjs              ← 安裝腳本共用工具函式
 ├── tests/
 ├── evidence/
 ├── package.json
@@ -50,8 +55,9 @@ pic-agent-call/
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |
 | `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢 | src/db.mjs, node:os, node:crypto |
 | `bin/server.mjs` | MCP transport + 20 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
-| `bin/msg-statusline.mjs` | CC/AGY statusbar hook CLI：優先以 `WT_SESSION` 查 `agents.term_key`（`getRegistrationsByTermKey`），查無結果才 fallback 至 `session_id`（AGY 或無 `WT_SESSION` 環境）；DB 無結果則輸出 `NO AGENT` | src/db.mjs, src/status.mjs |
-| `bin/msg-statusline-wrapper.mjs` | Gemini/Antigravity 狀態列整合包裝器：拼裝 Quota 狀態與 Agent 訊息狀態。**v1.1.3 重構**：廢棄 `process.stdin.on('end')` 等待觸發模式，改為啟動時同步讀取環境變數（`ANTIGRAVITY_CONVERSATION_ID`、`MEMORY_DB_PATH`）立即執行，解決 AGY CLI 不關閉 stdin 造成的 1500ms 超時 `exit status 1` 問題。若環境變數未設定則以空值降級處理。 | node:child_process, node:fs, node:path, node:os |
+| `bin/agent-statusline.mjs` | CC/AGY statusbar hook CLI：優先以 `WT_SESSION` 查 `agents.term_key`（`getRegistrationsByTermKey`），查無結果才 fallback 至 `session_id`（AGY 或無 `WT_SESSION` 環境）；DB 無結果則輸出 `NO AGENT` | src/db.mjs, src/status.mjs |
+| `bin/agent-statusline-wrapper.mjs` | Gemini/Antigravity 狀態列整合包裝器：拼裝 Quota 狀態與 Agent 訊息狀態。**v1.1.4 重構**：廢棄 `process.stdin.on('end')` 等待觸發模式，改為啟動時以**非阻塞式 readline（50ms timeout）** 讀取 stdin 並同時解析環境變數（`ANTIGRAVITY_CONVERSATION_ID`、`MEMORY_DB_PATH`），解決 AGY CLI 不關閉 stdin 造成的 1500ms 超時 `exit status 1` 問題。50ms 後若無 stdin 輸入則以環境變數降級處理；若環境變數亦未設定則以空值降級。 | node:child_process, node:fs, node:path, node:os, node:readline |
+| `~/.gemini/statusline-wrapper.mjs` | **Thin Forwarder（使用者層）**：由 `setup-agy-statusline.mjs` 安裝至使用者家目錄，作為 `settings.json` `statusLine.command` 的進入點。**⚠️ 禁止硬編碼**：forwarder 內的 `target` 路徑嚴禁寫死為固定絕對路徑；必須由 `setup-agy-statusline.mjs` 在安裝執行時動態解析出 `bin/agent-statusline-wrapper.mjs` 的真實絕對路徑，並以字串替換方式注入至 forwarder 的 `target` 變數中後，再寫入使用者家目錄。如此可確保跨使用者、跨安裝路徑皆能正確執行，且命名變更時只需重新執行安裝腳本即可，無需手動修改 forwarder。 | node:child_process, node:fs, node:os |
 
 ---
 
@@ -135,7 +141,7 @@ pic-agent-call/
 6.  **動作前訊息稽核門禁 (Pre-action Message Check Gate) 機制**：
     *   規範 AI 代理人於調用 any「寫入/修改檔案」或「執行指令」工具之前，必須強制主動執行 `agent_status` 查詢 unread 訊息。若 `unread > 0`，必須暫停寫入（防守手煞車），直至讀取並處理完畢。批次作業時於頭尾預檢且中途每寫入 5 個檔案強制預檢一次；敏感部署/提交命令無批次豁免權。
 7.  **多角色並列指示器與平台聚合狀態列 (Multi-role Statusline Aggregation)**：
-    *   `msg-statusline.mjs` 執行時，根據當前 `callerType`（`cc` 或是 `agy`）自動識別所屬平台。
+    *   `agent-statusline.mjs` 執行時，根據當前 `callerType`（`cc` 或是 `agy`）自動識別所屬平台。
     *   **Session ID 直查規範**：必須以 `CLAUDE_CODE_SESSION_ID`（CC）或 `ANTIGRAVITY_CONVERSATION_ID`（AGY）直接查詢 DB `agents` 表取得當前 session 的所有活躍角色。**禁止**以掃描 `agent-sessions/` 目錄取最新快取檔的方式作為 fallback（此行為會污染跨 terminal 顯示）。DB 查無結果時直接輸出 `NO AGENT`。
     *   除了讀取當前 session 的所有活躍角色外，必須向 DB 查詢該平台下所有已註冊且活躍/離線的角色（如 `WHERE agent_id LIKE 'AGY-%'` 或 `LIKE 'CC-%'`）與其各自的未讀訊息數。
     *   拼裝成並列格式輸出：當前視窗主身份固定排在首位且其前置加上 `▶` 標示，其餘角色依序並列顯示（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`），各角色間以兩個空格區隔，不使用 `|` 符號。確保使用者在單視窗切換或多實例並行時，能即時掌握平台全角色的未讀狀態，消除訊息漏看盲區。
@@ -148,9 +154,9 @@ pic-agent-call/
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
     *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
     *   API 內部執行安全性校驗與接收信箱判定：
-        *   **當前活躍角色定位**：由 DB 查詢 `agents.term_key = WT_SESSION`（Windows Terminal session GUID）識別當前活躍角色（主身份）。本地快取檔 `agent-sessions/<termKey>.json` 已於 v1.1.3 廢棄，不再作為角色識別依據。
+        *   **當前活躍角色定位**：由 DB 查詢 `agents.term_key = WT_SESSION`（若 `WT_SESSION` 環境變數存在）取得角色列表，其第一筆即為當前活躍角色（主身份）；若無 `WT_SESSION` 或查無資料，則 fallback 使用 `sessionId` 查詢 `agents` 表之第一筆作為活躍角色。本地快取檔 `agent-sessions/<termKey>.json` 已於 v1.1.3 廢棄，不再作為角色識別依據。
         *   `channel_list_unread`：若傳入特定的 `receiver` 參數，該 receiver 必須為當前活躍角色（或其對應之 role 郵箱），否則拋出 403 越權錯誤。返回結果應包含發送給該活躍角色、其 role 郵箱（格式為 `role?`）、以及發送給 `'any'` 且狀態為 `'UNREAD'` 的訊息。若 `receiver` 未指定或為 `'all'`，則系統自動拉取該 `sessionId` 綁定之所有活躍角色各自未讀訊息的聯集。
-        *   `channel_claim` 與 `channel_ack`：嚴格限制只能操作當前活躍角色有權處理的訊息。操作者傳入之 `agent_id` 必須與快取檔案中的當前活躍角色完全相符，且訊息接收者（`receiver`）必須為該當前活躍角色（或其 `role?` 郵箱，或為 `'any'` 且狀態為 `'UNREAD'`），禁止越權搶鎖或確認非本活躍角色的訊息。
+        *   `channel_claim` 與 `channel_ack`：嚴格限制只能操作當前活躍角色有權處理的訊息。操作者傳入之 `agent_id` 必須與當前活躍角色（主身份）完全相符，且訊息接收者（`receiver`）必須為該當前活躍角色（或其 `role?` 郵箱，或為 `'any'` 且狀態為 `'UNREAD'`），禁止越權搶鎖或確認非本活躍角色的訊息。若傳入之 `agent_id` 與定位出的當前活躍角色不符，API 必須拒絕並回傳 403 錯誤。
 10. **一會話多角色並存與接管規範 (One-Session Multi-Identities & Takeover)**：
     *   **資料庫約束調整**：物理刪除 `agents` 表上對 `session_id` 的唯一索引 (`idx_agents_session_id`)。允許一個會話 (`session_id`) 同時登記多個不同的 `agent_id`（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM` 同時綁定同一個 `session_id`），並均處於 `active` 狀態。
     *   **多角色分隔解析**：`register_agent` 支援在 `agent_id` 與 `role` 參數中傳入以逗號（半形 `,` 或全形 `，`）、頓號（`、`）、斜線（`/`）、加號（`+`）、分號（`;` 或 `；`）或空格等分隔的多個字串（例如 `agent_id` 填入 `"SA/PG/QA/PJM/PDM"` 或是 `"AGY-SA+AGY-PG+AGY-QA+AGY-PJM+AGY-PDM"`）。系統在執行 `register_agent` 時**必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）進行 Token 分割**，將其拆解成多個獨立的角色分別呼叫註冊流程，嚴禁將整串含有分隔符號的字串直接當作單一 `agent_id` 寫入資料庫。

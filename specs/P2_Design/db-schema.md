@@ -1,4 +1,4 @@
-# DB Schema (L2) — pic-agent-call v1.0.0
+# DB Schema (L2) — pic-agent-call v1.1.3
 
 沿用 `agent-call` 現有 schema，零遷移成本。
 DB 初始化由 `src/db.mjs initDatabase()` 負責。
@@ -81,13 +81,20 @@ CREATE TABLE IF NOT EXISTS agents (
     status             TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','offline')),
     agent_timeout_sec  INTEGER NOT NULL DEFAULT 120,
     poll_interval_sec  INTEGER NOT NULL DEFAULT 30,
-    term_key           TEXT,
-    session_id         TEXT,   -- CC: CLAUDE_CODE_SESSION_ID / AGY: ANTIGRAVITY_CONVERSATION_ID
-    role               TEXT,   -- 'SA' | 'PG' | 'QA' | 'DevOps' | 自定義
+    term_key           TEXT,    -- WT_SESSION GUID（Windows Terminal session 識別欄位）；跨 session 識別主要依據（v1.1.3）
+    session_id         TEXT,    -- CC: CLAUDE_CODE_SESSION_ID / AGY: ANTIGRAVITY_CONVERSATION_ID
+    role               TEXT,    -- 'SA' | 'PG' | 'QA' | 'DevOps' | 自定義
+    is_primary         INTEGER NOT NULL DEFAULT 0,  -- 主角色旗標（v1.1.4）：1 = 此 session 的 primary agent（▶）；0 = 副角色
     created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 )
+-- 非唯一索引（v1.1.3 確認是非唯一，支援一 session 多角色）
 CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)
+-- term_key 索引（v1.1.3 新增）：statusline 優先以 WT_SESSION 直查
+CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)
+-- is_primary 防呉 Partial Unique Index（v1.1.4 新增）
+-- 確保同一 session_id 下只能有一筆 is_primary = 1，CC + AGY 共用同一 session_id 欄位
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_primary ON agents(session_id) WHERE is_primary = 1
 ```
 
 **身份解析優先序**（server.mjs runtime）：
@@ -125,6 +132,9 @@ CREATE INDEX idx_acc_receiver_status ON agent_collaboration_channel(receiver, st
 - `agents` 補 `session_id` 欄位
 - `agents` 補 `role` 欄位
 - `agents` 物理刪除可能存在的唯一索引 `idx_agents_session_id` (`DROP INDEX IF EXISTS idx_agents_session_id`)，並改建非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`
+- `agents` 新增 term_key 非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`（v1.1.3）
+- `agents` 補 `is_primary INTEGER NOT NULL DEFAULT 0` 欄位（v1.1.4）：主角色旗標，用於穩定決定 `▶` 位置
+- `agents` 新增 Partial Unique Index `CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_primary ON agents(session_id) WHERE is_primary = 1`（v1.1.4）：防呈同 session 出現多個主角色
 - entities 為空且 JSON 快照存在 → `migrateFromJson()` 自動匯入
 
 ## 孤兒訊息（ORPHANED）
