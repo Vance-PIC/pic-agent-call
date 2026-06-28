@@ -178,9 +178,11 @@ pic-agent-call/
     *   **通道 `all` 與 `any` 訊息機制**：
         *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色 in `listUnread` 時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
         *   **`all` 信箱 (廣播)**：當發送端調用 `channel_send` 且指定 `receiver === 'all'` 時，`sendMessage` 內部應自動查詢 DB 中所有註冊且狀態為 `'active'` 的活躍角色（排除發送者 sender 本身），並為名單中的每個活躍 `agent_id` 各自寫入一筆獨立的未讀訊息紀錄，其 `receiver` 設為該 `agent_id`。
-    *   **強制接管限制**（v1.1.3 簡化）：
+    *   **強制接管與孤兒訊息限制**（v1.1.4 強化）：
         *   `force: true` 的強行接管行為僅限於「相同 `agent_id` 被另一個不同 `session_id` 再次註冊」的衝突場景。此時只允許從資料庫中更新該特定 `agent_id` 的 `session_id` 與 `term_key` 綁定，嚴禁波及當前 DB 中該舊 Session 綁定的其他角色紀錄。
-        *   **[廢棄 v1.1.3] 被接管舊端快取檔案同步**：此機制已移除（快取檔已廢棄）。接管後的一致性由 DB `agents.term_key` 欄位直接反映，無需同步快取檔。
+        *   **精準孤兒判定**：當執行強制接管時，只有當該 `agent_id` 原本綁定的 `term_key`（舊視窗）與新傳入的 `termKey`（當前視窗）**不同（跨 Terminal 視窗奪取）**時，才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若兩者 `term_key` 相同（同物理視窗重啟會話 Resume 移轉），則必須保留所有未讀訊息不予孤兒化。
+        *   **主角色指定與 displays**：強制接管成功後，該被 force 的角色之 `is_primary` 被設定為 `1`，同會話其他角色的 `is_primary` 均重設為 `0`，以確保其在 `getRegistrations` 中依 `ORDER BY is_primary DESC` 穩定排在首位成為主角色（`▶` 標示）。
+        *   **[廢棄 v1.1.3] 被接管舊端快取檔案同步**：此機制已移除（快取檔已廢棄）。接管後的一致性由 DB `agents.term_key` 欄位與 `is_primary` 直接反映，無需同步快取檔。
 
 ---
 
