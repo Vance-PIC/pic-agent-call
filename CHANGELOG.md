@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.1] - 2026-06-29
+
+### Fixed
+- **No Jitter display order**：`getRegistrations` / `getRegistrationsByTermKey` ORDER BY 改為 `created_at ASC`，角色順序固定不隨 active 切換而跳動；`▶` 僅在對應位置標示
+- `bin/agent-statusline.mjs`：移除 hardcoded `primaryAgentId = regs[0].agent_id`，改為不傳第三參數，讓 `getAgentStatus` 從 DB `status='active'` 自動判斷；term_key 來源改用 `PIC_TERM_KEY || WT_SESSION`
+- `src/status.mjs`：force re-register ON CONFLICT DO UPDATE 不再覆寫 `created_at`，防止 No Jitter 順序被重置
+- `src/channel.mjs`：`_resolvePrimaryAgentId` 改用 `PIC_TERM_KEY || WT_SESSION`，並優先回傳 `status='active'` 角色，修正 channel_claim 403 誤拒正確角色
+
+---
+
 ## [1.2.0] - 2026-06-29
 
 ### Added
