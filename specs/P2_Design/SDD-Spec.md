@@ -220,3 +220,9 @@ pic-agent-call/
 
 4. **測試覆蓋防線規格 (I6)**：
    * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
+
+5. **多角色主角色 (is_primary) 動態切換與自動轉移規格 (v1.1.4 補正)**：
+   * **唯一主角色切換機制**：每次呼叫 `register_agent` 時，**第一個傳入的 `agent_id`（即 `agentIds[0]`）** 必須強制被設定為該 `session_id` 的唯一主角色（`is_primary = 1`）。
+   * **其餘角色重置**：同 session 下的所有其他角色之 `is_primary` 均必須無條件被重設為 `0`。
+   * **覆蓋所有註冊路徑**：此 `is_primary` 的主副角色轉移邏輯，必須在 `registerAgent` 內部的 **`resume` (一道防線)、`fence1/2` (二道防線)、以及 `INSERT/ON CONFLICT` (三道防線)** 所有分支中強制執行，確保重新登記不同的角色順序時，主角色 `▶` 標記能即時熱更新。
+
