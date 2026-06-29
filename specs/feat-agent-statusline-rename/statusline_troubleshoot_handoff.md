@@ -47,3 +47,28 @@
 2. 在修復 channel 與 tasks 代碼時，順便在本地調試 agy 狀態列的 stdout 捕獲：
    * 試著在 `agent-statusline-wrapper.mjs` 輸出最純粹的單行英文字串（如 `hello`），看 agy 底部是否能顯示。
    * 若 `hello` 能顯示，再逐步加入 `[SA]`, `AGY-SA1`, 以及 ANSI 顏色、Emoji，藉此找出 Go 語言捕獲 stdout 的「字元集/轉義碼地雷邊界」。
+
+---
+
+## 4. settings.json 額度指標項目缺失問題 (v1.1.4 補正)
+
+### 🔴 額度列空白問題與成因 (Symptom & Root Cause)
+* **現象**：狀態列啟用後，只有 Agent 狀態列能浮現，但上面的 `antigravity-cli-statusline`（Quota 狀態列）卻只退回預設的極簡快捷鍵與模型名稱格式，沒有任何彩色膠囊額度指標。
+* **成因**：全域與專用 `settings.json` 中缺失了 `ui.footer.items`（或 `statusLine.items`）陣列，導致 `statusline-quota.mjs` 判定沒有需要啟用的指標項目，進而直接降級執行退回邏輯（L239-245）。
+
+### 🟢 解決方案與指標排序規範 (Solution & Ordered Items)
+* **方案**：必須在全域與專用 `settings.json` 的 `ui.footer` 與 `statusLine` 區塊下，寫入 `items` 陣列指標。
+* **指標排序規範**（依照使用者期望之最佳排版視覺效果進行順序排列）：
+  ```json
+  "items": [
+    "project-full-path",
+    "git-branch",
+    "model-name",
+    "context-used",
+    "token-count",
+    "quota",
+    "quota-reset-countdown"
+  ]
+  ```
+  當 settings.json 套用此 items 設定後，狀態列即會按照以上順序渲染並顯示豐富的指標膠囊，並藉由 hot reload 即時生效。
+
