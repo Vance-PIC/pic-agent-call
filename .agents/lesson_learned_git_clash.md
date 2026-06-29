@@ -2,7 +2,7 @@
 
 * **文件狀態**：`APPROVED`
 * **審查日期**：2026-06-29
-* **核准角色**：`AGY-SA1` (System Architect) & USER (Human-in-the-Loop)
+* **核准角色**：`User` (System Architect) & USER (Human-in-the-Loop)
 
 ---
 
@@ -40,15 +40,18 @@ graph TD
 ## 4. 預防優先級與落實方案 (Prevention Priority)
 
 ### 🥇 Priority 1: 門禁物理卡控 (Primary Prevention - Tooling Guard)
-* **落實方案**：改寫專案腳本 `scripts/check-gate.ps1`，在執行任何修改 Working Tree 的 Git 指令（如 `restore`, `checkout`）前：
-  1. **強制 Path-scoped 路徑限制**：禁止使用全域符號 `.`，必須指定特定路徑（如 `specs/`）。
-  2. **髒狀態 Ownership 檢驗 (Git Safety Preflight)**：自動執行 `git status --short`。若發現工作區中存在非自身 ownership 權限範圍的 uncommitted 變更（如 SA 執行時發現有 `src/` 修改），強行 Abort 並攔截操作，防止誤殺。
+* **落實方案**：改寫專案腳本 `scripts/check-gate.ps1`，在執行任何修改 Working Tree 的 Git 指令（如 `restore`, `checkout`, `reset`）前實施物理阻斷：
+  1. **觸發攔截條件**：偵測到指令參數包含 `--hard`、`-- .`、`.` 或是任何不帶路徑參數的全局重設/還原操作。
+  2. **髒狀態 Ownership 檢驗 (Git Safety Preflight)**：自動執行 `git status --short`。若發現工作區中存在非自身 ownership 權限範圍的 uncommitted 變更（如 SA 執行時發現有 `src/` 修改，或 PG 執行時發現有 `specs/` 修改），強行 Abort。
+  3. **阻斷警示提示**：強制阻斷時輸出紅色錯誤提示：`[Abort] Destructive global git command detected without explicit path. Action blocked to protect peer agent workspace.`
 
 ### 🥈 Priority 2: 語意規範注入 (Secondary Protection - Context Rule)
 * **落實方案**：在專案規則檔 [.agents/AGENTS.md](file:///C:/PIC/AI-tools/claude-marketplace/pic-agent-call/.agents/AGENTS.md) 中，將「Git 破壞防禦線」明文寫入 System Prompt，確保 AI 代理人每次啟動皆強制加載此項指令級卡控。
 
 ### 🥉 Priority 3: 減災機制 (Damage Mitigation - Damage Control)
-* **落實方案**：PG 與 QA 代理人在工作移交或 Session 結束前，養成 WIP 暫存（隨手執行 `git stash` 或 WIP commit）的習慣，作為防線全部失效時的最後救命稻草。
+* **落實方案 (包含人類操作繞過減災)**：
+  1. **工作移交與備份**：PG 與 QA 代理人在工作移交或 Session 結束前，養成隨手執行 `git stash` 或 WIP commit 的習慣。
+  2. **自動定時工作區快照 (Snapshot)**：在 `pic_watchdog.ps1` 本地哨兵進程中，新增每 5 分鐘自動將當前工作區中未提交的修改備份/快照至 `.git/WIP_backup/` 目錄，以防人類使用者在 Terminal 執行 `git reset --hard` 時徹底抹除實體代碼。
 
 ---
 
