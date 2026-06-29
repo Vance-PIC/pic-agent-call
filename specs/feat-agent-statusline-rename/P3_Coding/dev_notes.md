@@ -1,110 +1,49 @@
-# Dev Notes — feat-agent-statusline-rename
+# 🔍 狀態列 (agy-statusline) 未浮現問題交接與除錯筆記 (Dev Notes)
 
-## 🤖 操作缺失檢討報告
-
-**報告日期**：2026-06-25
-**回報人**：CC-PG2
-**嚴重等級**：低（本次未造成實際錯誤，但為潛在風險）
+本文件紀錄目前於 Windows Antigravity 2.0 (agy) 實體終端機中，狀態列在背景執行成功但畫面上**依然空白、未浮現**的調研狀態，供 `CC-PG1` 及 `Codex` 作為接續除錯與交接的真實依據。
 
 ---
 
-### 一、問題說明
+## 1. 目前現象與已確認狀態 (Symptom & Ruled-Out Items)
 
-確認「主/副角色判斷規則」時，僅查閱 `specs/P2_Design/SDD-Spec.md`，未同步查閱 `specs/P2_Design/api-spec.md`。直到用戶明確 @ 指定 api-spec.md 才補讀。
+### 🔴 目前現象 (Symptom)
+* 使用者在 Windows Terminal 重啟與輸入 prompt 後，後台指令執行正常（退出碼 0），資料庫中的 `updated_at` 也隨之正常更新。
+* 但 Terminal 底部（頁尾）依然一片空白，狀態列未顯示 any 資訊。
 
----
-
-### 二、影響範圍
-
-- **本次影響**：兩份 SPEC 結論一致，實際回答正確，未造成錯誤交付
-- **潛在風險**：若兩份 SPEC 有差異（如 api-spec 有更細的型態限制、廢棄標記、或參數變更），可能產生錯誤實作並通過錯誤的單元測試，到 QA 或 UAT 才爆發
-
----
-
-### 三、根本原因
-
-未建立「查規格須雙文件齊查」的操作習慣。預設只搜尋 SDD-Spec（設計邏輯層），遺漏 api-spec（函式簽名 / 型態 / 廢棄標記層）。本質是 checklist 缺失，非技術能力問題。
+### 🟢 已排查排除的項目 (Ruled-Out)
+1. **排除了指令超時被殺**：`agent-statusline-wrapper.mjs` 中的 300ms 安全防禦超時（`safetyTimeout` + `process.exit(0)`）已啟用，絕對不會超出 CLI 對 Hook 執行的超時限制。
+2. **排除了 Stdin 造成的背景卡死**：`child.stdin.end()` 的 EOF 關閉 Bug 已完全修復，不會有 node.exe 進程洩漏與 CPU 卡頓。
+3. **排除了路徑引號與安全信任**：全域與專用 `settings.json` 裡的雙引號已全部移除（避免了 Windows spawn 的畸形拼接路徑 `Cannot find module` 錯誤），且 `trusted_hooks.json` 中已登記信任。
+4. **排除了資料庫查詢無效**：DB 中當前 session 的 `term_key` 與 `WT_SESSION` 綁定狀態 100% 正確，測試執行輸出也正常。
 
 ---
 
-### 四、補救辦法
+## 2. 深度懷疑的技術成因 (Suspected Root Causes for PG / Codex)
 
-1. **即時**：已將規則寫入 auto-memory（`feedback_spec_reading.md`），未來 session 自動載入
-2. **流程**：MEMORY.md 加入索引條目，確保跨 session 持續生效
-3. **通知**：已發 channel 訊息告知 AGY-SA 與 AGY-PM
+以下為 SA 調研後，認為最有可能導致 CLI 捕獲了 stdout 卻「默默丟棄、不予顯示」的關鍵盲點：
 
-**補救方法修正（2026-06-25 補記）**：
+### 🔎 懷疑一：Windows 控制台 (Console) 編碼與 Unicode Emojis 解碼失敗
+* **成因**：Windows Terminal 下的 `agy.exe` 是 Go 語言編譯的，它在捕獲子進程（Node.js wrapper）的 stdout 時，預設使用作業系統的字元集（如繁體中文環境的 CP950）。
+* **問題**：Node.js 輸出的狀態列 display 含有 **4-byte 寬字元 Emoji（如 `🟢`, `▶`）以及 ANSI 顏色控制碼**。Go 在讀取這些位元組流時，若因為編碼不匹配導致解碼出畸形亂碼，CLI 的格式驗證器或安全過濾可能判定該輸出「不合法」而直接將該行默默丟棄。
+* **交接嘗試**：我們已在 `bin/agent-statusline.mjs` 中為 `agy` 平台實施了「純 ASCII 降級輸出」（`[SA] AGY-SA1(0)` 格式）。**請 PG 繼續確認**：此 ASCII 降級是否已經被 CLI 成功解讀，或者是否需要將所有方括號、括號等特殊 ASCII 也一併移除（例如改為最純粹的 `SA AGY-SA1 0`）以進一步排查。
 
-初版補救辦法僅描述「查閱多份 SPEC」，不夠具體。正確的 SPEC 對照程序應為：
+### 🔎 懷疑二：bubbletea / lipgloss 的渲染行數與寬度邊界限制
+* **成因**：Antigravity 2.0 CLI 在頁尾底部使用 bubbletea (Go UI 框架) 與 `lipgloss` 進行排版渲染。其 Footer 區塊通常是「固定的單行渲染」。
+* **問題**：
+  * 當 Quota 腳本正常返回時，wrapper 的輸出會有 **2 行**（第一行 Quota 資訊，第二行 Agent 資訊）。
+  * 如果 bubbletea 的 Footer 控制器**只預留了 1 行的高度**，接收到 2 行輸出時，可能會引發渲染器邊界溢出崩潰，或直接拒絕渲染這多出來的行數，導致整行變空白。
+* **調查建議**：
+  1. 請 PG 或 Codex 協助在 `settings.json` 中臨時把 statusLine 設為 `node C:/.../agent-statusline.mjs` (只輸出 Agent 的單行) 測試看能否顯示。
+  2. 檢查 `agy` CLI 原始碼中對於 `ui.footer` 或 `statusLine` 輸出的 lines 限制與寬度裁切邏輯。
 
-1. `git diff v1.1.3..HEAD -- specs/P2_Design/` 查看本次分支相對**上一個 release tag（v1.1.3）**的 SPEC 差異，確認 SA 做了哪些調整
-2. 對照 `git diff v1.1.3..HEAD -- src/ bin/` 確認實作變更範圍
-3. 逐一核查每個實作變更是否有對應的 SPEC 條目，找出遺漏
-
-**本次執行結果**：`specs/P2_Design/` 對比 v1.1.3 **零 diff**，表示 SA 的 SPEC 更新（含 `~/.gemini/statusline-wrapper.mjs` 條目）已在 v1.1.3 之後直接推至 main，SPEC 現況已是最新。但發現以下 5 項 **SPEC 與實作不符**，已通知 SA 更新：
-
-| # | 檔案 | 問題 | 類型 |
-|---|------|------|------|
-| 1 | api-spec.md | `getAgentStatus` 缺第三參數 `primaryAgentId` | SPEC 舊欠債（v1.1.3 前即存在，本次分支未改動） |
-| 2 | api-spec.md | `resolveSessionId` 缺 `callerType` 參數 | SPEC 舊欠債（同上） |
-| 3 | api-spec.md | 缺 `getAgentsByPlatformStatus`、`getRegistration` 兩個 export | SPEC 舊欠債（同上） |
-| 4 | SDD-Spec §3 | `agent-statusline-wrapper.mjs` 描述過時（未反映 readline 方案）| 本次分支引入之差異 |
-| 5 | SDD-Spec §2 | `bin/` 目錄清單不完整 | SPEC 舊欠債 |
-
-> `git diff v1.1.3..HEAD -- src/status.mjs` 驗證：第 1-3 項無 diff，確認為既有欠債。第 4 項（readline 方案）為本次 v1.1.4 分支新增，SPEC 確實需要補。
+### 🔎 懷疑三：CLI 內部 `/statusline` 開關狀態與會話 Session ID
+* **問題**：CLI 內部維護的狀態列開關（藉由 `/statusline` 控制）是否因為重啟或 session 轉移，在內部被記為了 `false` 或 `disabled`。請 PG 協助確認在該狀態下，`/statusline` 指令是否能正常切換與觸發背景 wrapper 執行。
 
 ---
 
-### 五、程式碼補改說明
+## 3. 交接代辦事項 (Handoff TODOs for CC-PG1)
 
-本次缺失為**流程操作問題**，不需改動生產程式碼。但有一項遺漏的文件同步需補齊：
-
-#### 5.1 已改動的檔案（feat-agent-statusline-rename 分支）
-
-| 檔案 | 改動內容 | Commit |
-|------|---------|--------|
-| `bin/setup-agy-statusline.mjs` | 新增 `setupForwarder()`，以 `fileURLToPath(import.meta.url)` 動態解析 `agent-statusline-wrapper.mjs` 真實絕對路徑，寫入 `~/.gemini/statusline-wrapper.mjs` | `fee4159` |
-| `~/.gemini/statusline-wrapper.mjs` | target 路徑由 `msg-statusline-wrapper.mjs` 修正為 `agent-statusline-wrapper.mjs` | 直接修改（非 repo 追蹤） |
-
-#### 5.2 未改動但需確認的檔案
-
-| 檔案 | 確認項目 |
-|------|---------|
-| `specs/P2_Design/SDD-Spec.md` | SA 於 msg-050adf17 指出 §3 模組切割表格需含 `~/.gemini/statusline-wrapper.mjs` 條目，請 SA 確認已補充 |
-
----
-
-### 六、QA 請協助補充的測試案例
-
-**T1 — `setupForwarder()` 動態路徑生成正確性**
-- 執行 `node bin/setup-agy-statusline.mjs`
-- 驗證 `~/.gemini/statusline-wrapper.mjs` 的 `target` 變數值等於 `bin/agent-statusline-wrapper.mjs` 的真實絕對路徑
-- 路徑分隔符應為正斜線（`/`）
-- 不應包含 `msg-statusline-wrapper.mjs` 舊名
-
-**T2 — forwarder 可正常啟動**
-- 執行 `node ~/.gemini/statusline-wrapper.mjs`
-- 應可成功啟動並正常退出（exit code 0）
-- 不應出現 `Cannot find module` 錯誤
-
-**T3 — 改名後 statusline 輸出正常**
-- 模擬 CC 視窗環境（設定 `CLAUDE_CODE_SESSION_ID`、`WT_SESSION`）
-- 執行 `node bin/agent-statusline.mjs`
-- 應輸出正確的 agent 狀態，不應輸出 `NO AGENT` 或報錯
-
----
-
-### 七、檢驗方式
-
-**操作合規**：下次查規格時，工具呼叫 log 中應同時出現對 `SDD-Spec.md` 與 `api-spec.md` 兩份文件的 Read 或 Grep 呼叫，缺一視為未合規。
-
-**程式碼修復**：T1、T2、T3 測試案例全數通過。
-
----
-
-> [!NOTE]
-> 🤖 **[開發上下文：P3 Coding 缺失補救]**
-> * **分支**：`track/feat-agent-statusline-rename`
-> * **相關 Commit**：`fee4159` fix(setup-agy-statusline)
-> * **待 QA**：T1、T2、T3 三個測試案例（見第六節）
-> * **注意事項**：`setupForwarder()` 使用 template literal 展開 `targetPath`，QA 驗證時注意路徑分隔符為正斜線（`/`）
+1. 優先修復 `specs/P2_Design/SDD-Spec.md` §6.12 節中定義的 C1~C2, I1~I6 併發安全與時區問題。
+2. 在修復 channel 與 tasks 代碼時，順便在本地調試 agy 狀態列的 stdout 捕獲：
+   * 試著在 `agent-statusline-wrapper.mjs` 輸出最純粹的單行英文字串（如 `hello`），看 agy 底部是否能顯示。
+   * 若 `hello` 能顯示，再逐步加入 `[SA]`, `AGY-SA1`, 以及 ANSI 顏色、Emoji，藉此找出 Go 語言捕獲 stdout 的「字元集/轉義碼地雷邊界」。
