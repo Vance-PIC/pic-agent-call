@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.4] - 2026-06-29
+
+### Added
+- `register_agent`: 新增可選 `timeout` 參數（秒），寫入 `agents.agent_timeout_sec`，支援 per-agent 動態超時設定
+- `src/status.mjs`: 歷史離線清理 — `getAgentStatus` 執行超時掃描後，自動 DELETE `status='offline' AND last_seen < now - 7 days`
+
+### Changed
+- `src/db.mjs`: `agents.agent_timeout_sec` 預設值 120 → 86400（24 小時），防止 agent 被過早離線
+- `src/status.mjs`: `getAgentStatus` heartbeat 改為只更新 `status='active'` 角色的 `last_seen`，不再連坐喚醒 offline 殘留角色
+- `src/status.mjs`: 全域超時掃描移除 `session_id != ?` 限制，涵蓋全系統所有 active 角色
+
+### Fixed
+- `src/status.mjs`: `registerAgent(force=true)` 時，同 session 內不在新名單的殘留角色改為軟離線（`status='offline'`）而非保留 active，修正 statusline 顯示幽靈角色（CC-PG2、CC-QA2）問題
+
+---
+
 ## [1.1.3] - 2026-06-25
 
 ### Changed
