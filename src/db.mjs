@@ -132,14 +132,19 @@ export function initDatabase(dbPath, jsonPath) {
         `ALTER TABLE agents ADD COLUMN term_key TEXT`,
         `ALTER TABLE agents ADD COLUMN session_id TEXT`,
         `ALTER TABLE agents ADD COLUMN role TEXT`,
+        `ALTER TABLE agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`,
     ]) {
-        try { db.exec(sql); } catch (_) {}
+        try { db.exec(sql); } catch (err) {
+            if (!String(err.message).includes('duplicate column')) throw err;
+        }
     }
     // v1.1.0 多角色：session_id 改非唯一索引
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_id`); } catch (_) {}
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
     // v1.1.3 term_key 索引：statusline 優先以 WT_SESSION 直查
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`);
+    // v1.1.5 is_primary：每個 session 最多一個主角色（partial unique index）
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_primary ON agents(session_id) WHERE is_primary = 1`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {
@@ -193,11 +198,17 @@ async function _doSyncDbToJson(db, jsonPath) {
         await fs.promises.writeFile(tmpPath, jsonLines, 'utf8');
         try {
             await fs.promises.rename(tmpPath, jsonPath);
-        } catch (_) {
-            try { await fs.promises.unlink(tmpPath); } catch (__) {}
-            await fs.promises.writeFile(jsonPath, jsonLines, 'utf8');
+        } catch (renameErr) {
+            try { await fs.promises.unlink(tmpPath); } catch (_) {}
+            try {
+                await fs.promises.writeFile(jsonPath, jsonLines, 'utf8');
+            } catch (writeErr) {
+                console.error('[pic-agent-call] _doSyncDbToJson: fallback write failed', writeErr);
+            }
         }
-    } catch (_) {}
+    } catch (err) {
+        console.error('[pic-agent-call] _doSyncDbToJson: sync failed', err);
+    }
 }
 
 export async function withRetry(fn, maxRetries = MAX_RETRIES) {

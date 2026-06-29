@@ -26,19 +26,18 @@ export async function sendMessage(db, receiver, message, sender, sessionId, prio
     ).run(msgId, sender, recv, p, message);
 
     if (receiver === 'all') {
-        // 廣播：對所有 active agents（排除 sender）各寫一筆
-        const allAgents = db.prepare(
-            `SELECT agent_id FROM agents WHERE status = 'active' AND agent_id != ?`
-        ).all(sender);
-
-        if (allAgents.length === 0) {
-            return { message_id: null, status: 'NO_ACTIVE_RECEIVERS', count: 0 };
-        }
-
+        // 廣播：SELECT + INSERT 在同一 transaction，防止 agent 在兩者之間變更
         const ids = [];
         await withRetry(() => {
             db.exec('BEGIN IMMEDIATE');
             try {
+                const allAgents = db.prepare(
+                    `SELECT agent_id FROM agents WHERE status = 'active' AND agent_id != ?`
+                ).all(sender);
+                if (allAgents.length === 0) {
+                    db.exec('ROLLBACK');
+                    return;
+                }
                 for (const { agent_id } of allAgents) {
                     const msgId = `msg-${randomUUID()}`;
                     insertOne(agent_id, msgId);
@@ -50,6 +49,7 @@ export async function sendMessage(db, receiver, message, sender, sessionId, prio
                 throw err;
             }
         });
+        if (ids.length === 0) return { message_id: null, status: 'NO_ACTIVE_RECEIVERS', count: 0 };
         return { message_id: ids[0], status: 'UNREAD', count: ids.length, message_ids: ids };
     }
 
@@ -139,22 +139,23 @@ export function listUnread(db, receiver, sessionId) {
     return { messages: rows, count: rows.length };
 }
 
+function _resolvePrimaryAgentId(db, sessionId) {
+    const wtSession = process.env.WT_SESSION;
+    if (wtSession) {
+        const termRegs = getRegistrationsByTermKey(db, wtSession);
+        if (termRegs && termRegs.length > 0) return termRegs[0].agent_id;
+    }
+    const sid = sessionId || resolveSessionId();
+    const regs = getRegistrations(db, sid);
+    if (regs && regs.length > 0) return regs[0].agent_id;
+    return null;
+}
+
 // v1.1.0 claimMessage
 // - agent_id 必須與 sessionId 當前活躍角色吻合
 // - 訊息 receiver 須為該 agent_id / role? / 'any'
 export function claimMessage(db, message_id, agent_id, sessionId) {
-    // 取得當前活躍主身份（DB term_key 查詢，fallback 至 sessionId）
-    const wtSession = process.env.WT_SESSION;
-    let primaryAgentId = null;
-    if (wtSession) {
-        const termRegs = getRegistrationsByTermKey(db, wtSession);
-        if (termRegs && termRegs.length > 0) primaryAgentId = termRegs[0].agent_id;
-    }
-    if (!primaryAgentId) {
-        const sid = sessionId || resolveSessionId();
-        const regs = getRegistrations(db, sid);
-        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
-    }
+    const primaryAgentId = _resolvePrimaryAgentId(db, sessionId);
     // 若有活躍主身份，agent_id 必須吻合
     if (primaryAgentId && agent_id !== primaryAgentId) {
         return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
@@ -204,18 +205,7 @@ export function claimMessage(db, message_id, agent_id, sessionId) {
 // v1.1.0 ackMessage
 // - agent_id 必須與 sessionId 當前活躍角色吻合且為原始搶鎖者
 export function ackMessage(db, message_id, agent_id, sessionId) {
-    // 取得當前活躍主身份（DB term_key 查詢，fallback 至 sessionId）
-    const wtSession = process.env.WT_SESSION;
-    let primaryAgentId = null;
-    if (wtSession) {
-        const termRegs = getRegistrationsByTermKey(db, wtSession);
-        if (termRegs && termRegs.length > 0) primaryAgentId = termRegs[0].agent_id;
-    }
-    if (!primaryAgentId) {
-        const sid = sessionId || resolveSessionId();
-        const regs = getRegistrations(db, sid);
-        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
-    }
+    const primaryAgentId = _resolvePrimaryAgentId(db, sessionId);
     // 若有活躍主身份，agent_id 必須吻合
     if (primaryAgentId && agent_id !== primaryAgentId) {
         return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
