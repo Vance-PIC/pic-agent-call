@@ -264,11 +264,13 @@ pic-agent-call/
    * **動態超時參數配置**：
      * `register_agent` API 新增可選參數 `timeout`（秒數），傳入時直接寫入 DB `agents.agent_timeout_sec` 欄位。
      * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutSec"`，作為未帶 API 參數時的預設值（Session 存活超時預設提升為 **24 小時/86400 秒**）。
-   * **雙重超時閾值定義**：
-    * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，\`getAgentStatus\` 每次執行超時判定時，**必須自動執行過期刪除**：凡 \`status = 'offline'\` 且其最後活躍時間（\`last_seen\`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 \`DELETE\` 清除。
-      \`\`\`sql
+    * **雙重超時閾值定義**：
+      * **Session Timeout (會話存活超時: 24 小時)**：凡全系統中任何活躍角色的 `last_seen` 超過其 `agent_timeout_sec` 時，一律自動更新標記為 `status = 'offline'`。這是為了控制資料庫資料存活期。
+      * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 分鐘)**：此閾值不寫入 DB，僅由狀態列渲染腳本（`agent-statusline.mjs`）在讀取時，用於判定角色是否為黃燈 🟡（例如 `last_seen` 超過 120 分鐘 / 7200 秒未更新，狀態列顯示其為黃燈），不修改其 DB 存活狀態。
+    * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，`getAgentStatus` 每次執行超時判定時，**必須自動執行過期刪除**：凡 `status = 'offline'` 且其最後活躍時間（`last_seen`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 `DELETE` 清除。
+      ```sql
       DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
-      \`\`\`
+      ```
 
 8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正)**：
    * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝與引導環境設定腳本。
