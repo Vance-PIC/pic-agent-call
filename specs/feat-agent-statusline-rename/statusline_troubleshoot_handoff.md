@@ -88,8 +88,12 @@
 
 ### 📅 PG1 追加代辦事項
 3. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 6 點，修改 `src/db.mjs` 中的 `resolveMemoryPaths` 函式，實施向上遞迴尋找專案根目錄防分裂機制，確保 MCP 伺服器長進程與背景 `agent-statusline.mjs` 讀寫同一個 SQLite 資料庫檔案。
-4. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 7 點，修改 `src/status.mjs` 的 `getAgentStatus` 與 `registerAgent` 函式，以及 `bin/server.mjs` 註冊工具：
-   * 限制 Heartbeat 更新只針對 `status = 'active'` 角色。
-   * 全域主動離線超時檢測移除 `session_id != ?` 限制，且支援讀取 API `timeout` 參數及 `settings.json` `"agentTimeoutSec"` 配置（預設提升為 24 小時/86400秒）。
-   * Forced 強制註冊時，將同 session 內但不在新登記名單中的殘留角色更新為 `status = 'offline'` (軟離線，不 DELETE)。
-   * **歷史離線自動清理**：超時判定時，自動 `DELETE` 超過 7 天（可配置）的離線歷史註冊紀錄，確保資料庫不膨脹。
+4. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 7 點及三態狀態模型（v1.1.4 補正），重構 `src/db.mjs`、`src/status.mjs` 與 `src/channel.mjs`：
+   * **DB 變更**：`term_key TEXT NOT NULL`，且限制 `status IN ('active', 'attached', 'offline')`。廢除 `is_primary` 欄位。增設 `idx_agents_term_active` 唯一活躍索引。
+   * **註冊狀態與轉移**：名單首位設為 `'active'`，其餘為 `'attached'`。同視窗重開新 Session 時，先斷開舊會話（`status = 'offline'`）再整批繫結。
+   * **心跳與 attached 豁免**：心跳更新擴大為 `status IN ('active', 'attached')`，保持 attached 角色的在線掛載；狀態列可讀取 attached 角色的未讀數。
+   * **讀信與 Claim 權限門禁**：`server.mjs` 呼叫時自動解析並傳入 `sessionId`；`channel.mjs` 內部校驗唯有 `'active'`（主角色）可讀信與 Claim，其餘 `'attached'` 角色一律拒絕。
+   * **雙重超時與 Freshness**：`agent_timeout_sec = 86400`（24小時）作為 DB 存活超時；狀態列渲染則使用 120 秒作為 Freshness threshold 判定是否顯示黃燈/灰燈，不改變 DB status。
+   * **自動注入**：在 `bin/setup-statusline.mjs` 啟動時，若環境變數無 `PIC_TERM_KEY`，自動產生隨機 UUID 並寫入當前視窗環境變數 `$env:PIC_TERM_KEY`。
+   * **過期自動清理**：每次超時判定，自動 `DELETE` 離線已滿 7 天的角色。
+

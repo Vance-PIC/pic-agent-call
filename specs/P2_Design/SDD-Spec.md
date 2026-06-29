@@ -221,31 +221,44 @@ pic-agent-call/
 4. **測試覆蓋防線規格 (I6)**：
    * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
 
-5. **多角色主角色 (is_primary) 動態切換與自動轉移規格 (v1.1.4 補正)**：
-   * **唯一主角色切換機制**：每次呼叫 `register_agent` 時，**第一個傳入的 `agent_id`（即 `agentIds[0]`）** 必須強制被設定為該 `session_id` 的唯一主角色（`is_primary = 1`）。
-   * **其餘角色重置**：同 session 下的所有其他角色之 `is_primary` 均必須無條件被重設為 `0`。
-   * **覆蓋所有註冊路徑**：此 `is_primary` 的主副角色轉移邏輯，必須在 `registerAgent` 內部的 **`resume` (一道防線)、`fence1/2` (二道防線)、以及 `INSERT/ON CONFLICT` (三道防線)** 所有分支中強制執行，確保重新登記不同的角色順序時，主角色 `▶` 標記能即時熱更新。
+5. **多角色三態狀態模型 (Three-State Model) 與轉移規格 (v1.1.4 補正)**：
+   * **欄位結構重整**：徹底廢止原 \`is_primary\` 欄位。在 \`agents\` 表的 DDL 中將 \`status\` 限制為三態，且 **\`term_key\` 欄位明確設為 \`NOT NULL\`**（強制推動 \`PIC_TERM_KEY\` 大一統）：
+     \`\`\`sql
+     term_key TEXT NOT NULL,
+     status   TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active', 'attached', 'offline'))
+     \`\`\`
+   * **三態定義**：
+     * **\`active\`**：主角色 (Primary)。同一 \`term_key\` 物理視窗在同時間僅能有一個 \`active\` 角色，獨佔對話框讀信與 Claim/Ack 特權。
+     * **\`attached\`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
+     * **\`offline\`**：離線/超時角色。不顯示於狀態列中。
+   * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 \`active\` 角色：
+     \`\`\`sql
+     CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
+     \`\`\`
+   * **視窗移轉 (A/B 情境整批轉移)**：當新會話在當前視窗啟動時，先斷開舊會話的活躍狀態，再整批繫結：
+     \`\`\`sql
+     -- 1. 斷開此視窗下其他舊會話的活躍狀態（設為 offline）
+     UPDATE agents SET status = 'offline' WHERE term_key = ? AND session_id != ?
+     -- 2. 將此視窗整批繫結給新會話角色，第一個角色設為 'active'，其餘設為 'attached'
+     \`\`\`
+   * **防 NULL 抹除**：若 API 傳入的 \`termKey\` 為空，程式**強制沿用並保留 DB 中已有的 \`term_key\` 值，禁止覆寫為空**。
 
 6. **SQLite 資料庫路徑解析防分裂規格 (v1.1.4 補正)**：
-   * **問題背景**：由於對話框 MCP 伺服器長進程與背景 `agent-statusline.mjs` 刷新腳本啟動時的當前工作目錄（`process.cwd()`）不同（前者可能為家目錄，後者為專案目錄），僅依賴 `process.cwd()` 會導致兩者分別讀寫不同的 `.memory/memory-graph.db` SQLite 檔案，造成狀態列與對話框資訊分裂不同步。
-   * **防分裂解析防線**：`src/db.mjs` 中的 `resolveMemoryPaths` 函式在解析專案目錄 `.memory` 時，**必須**從當前目錄向上尋找直到發現 `.git` 或者是 `package.json` 以定位出專案根目錄，並以此根目錄下的 `.memory/memory-graph.db` 作為讀寫路徑，不得盲目依賴 `process.cwd()`，以此確保全進程 SSoT 資料庫一致。
+   * **防分裂解析防線**：\`src/db.mjs\` 中的 \`resolveMemoryPaths\` 函式在解析專案目錄 \`.memory\` 時，**必須**從當前目錄向上尋找直到發現 \`.git\` 或者是 \`package.json\` 以定位出專案根目錄，並以此根目錄下的 \`.memory/memory-graph.db\` 作為讀寫路徑，不得盲目依賴 \`process.cwd()\`，以此確保全進程 SSoT 資料庫一致。
 
-7. **多角色動態離線與生命週期防護規格 (v1.1.4 補正)**：
-   * **心跳防連坐喚醒**：`getAgentStatus` 內部的 Heartbeat 更新，**必須**限制為只更新活躍狀態的角色（`status = 'active'`），嚴禁將已離線或殘留的角色自動重設為活躍。
-     ```sql
+7. **多角色生命週期防護與雙重超時規格 (v1.1.4 補正)**：
+   * **心跳防連坐與 Attached 豁免**：\`getAgentStatus\` 內部的 Heartbeat 更新，**僅限更新 \`status IN ('active', 'attached')\` 的在線角色**，更新其 \`last_seen\` 以維持其掛載狀態，嚴禁喚醒已 \`offline\` 的離線角色。
+     \`\`\`sql
      UPDATE agents SET last_seen = datetime('now','localtime')
-     WHERE session_id = ? AND status = 'active'
-     ```
-   * **全域主動超時離線**：心跳檢測超時 SQL **必須移除 `session_id != ?` 的限制**。不論是否同會話，凡全系統中任何活躍角色的 `last_seen` 超過其註冊的 `agent_timeout_sec`（Zod timeout 參數或 `settings.json` 的 `"agentTimeoutSec"` 配置，預設提升為 **24 小時/86400 秒**），一律更新標記為 `status = 'offline'`。
-   * **強制覆寫時殘留軟離線**：當呼叫 `register_agent` 且 `force=true` 時，針對**同 session 內但不在新登記名單中**的殘留角色，一律實行軟離線標記：
-     ```sql
-     UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-     WHERE session_id = ? AND agent_id NOT IN (新名單 agent_id list)
-     ```
+     WHERE session_id = ? AND status IN ('active', 'attached')
+     \`\`\`
    * **動態超時參數配置**：
-     * `register_agent` API 新增可選參數 `timeout`（秒數），傳入時直接寫入 DB `agents.agent_timeout_sec` 欄位。
-     * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutSec"`，作為未帶 API 參數時的預設值（最外層 Default 為 86400）。
-   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，`getAgentStatus` 每次執行超時判定時，**必須自動執行過期刪除**：凡 `status = 'offline'` 且其最後活躍時間（`last_seen`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 `DELETE` 清除。
-     ```sql
+     * \`register_agent\` API 新增可選參數 \`timeout\`（秒數），傳入時直接寫入 DB \`agents.agent_timeout_sec\` 欄位。
+     * 支援在全域或專用 \`settings.json\` 裡配置 \`"agentTimeoutSec"\`，作為未帶 API 參數時的預設值（Session 存活超時預設提升為 **24 小時/86400 秒**）。
+   * **雙重超時閾值定義**：
+     * **Session Timeout (會話存活超時: 24 小時)**：凡全系統中任何活躍角色的 \`last_seen\` 超過其 \`agent_timeout_sec\` 時，一律自動更新標記為 \`status = 'offline'\`。這是為了控制資料庫資料存活期。
+     * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 秒)**：此閾值不寫入 DB，僅由狀態列渲染腳本（\`agent-statusline.mjs\`）在讀取時，用於判定角色是否為黃燈/灰燈（例如 \`last_seen\` 超過 120 秒未更新，狀態列顯示其為非即時在線），不修改其 DB 存活狀態。
+   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，\`getAgentStatus\` 每次執行超時判定時，**必須自動執行過期刪除**：凡 \`status = 'offline'\` 且其最後活躍時間（\`last_seen\`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 \`DELETE\` 清除。
+     \`\`\`sql
      DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
-     ```
+     \`\`\`
