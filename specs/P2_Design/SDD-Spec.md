@@ -174,7 +174,7 @@ pic-agent-call/
     *   **心跳與狀態列同步更新**：實施**讀寫分離**與**心跳降頻**（10 秒閾值），並以非同步背景執行更新。
     *   **狀態列資訊聚合 (getAgentStatus)**：
         *   `getAgentStatus` 回傳的 `unread` 為該 `sessionId` 綁定之所有活躍角色未讀數之總和。
-        *   其 `display` 格式改為各角色個別並列顯示，以兩個空格區隔（不使用 `|` 符號）：主身份（快取中定義之當前活躍角色）固定排在首位且其前置加上 `▶` 標示，其餘角色依序並列顯示（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`）。未讀數 >= 1 顯示為紅色 `🔴N·`，未讀數為 0 顯示為綠色 `🟢0·`。
+        *   其 `display` 格式改為各角色個別並列顯示，以兩個空格區隔（不使用 `|` 符號）：所有活躍角色在狀態列中固定依註冊創建時間 (created_at ASC) 排列，不再將主角色移至首位；主身份僅在其角色名稱前置加上 `▶` 標示，其位置隨 active 角色狀態動態跳動以維持順序穩定 (No Jitter)（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`）。未讀數 >= 1 顯示為紅色 `🔴N·`，未讀數為 0 顯示為綠色 `🟢0·`。
     *   **通道 `all` 與 `any` 訊息機制**：
         *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色 in `listUnread` 時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
         *   **`all` 信箱 (廣播)**：當發送端調用 `channel_send` 且指定 `receiver === 'all'` 時，`sendMessage` 內部應自動查詢 DB 中所有註冊且狀態為 `'active'` 的活躍角色（排除發送者 sender 本身），並為名單中的每個活躍 `agent_id` 各自寫入一筆獨立的未讀訊息紀錄，其 `receiver` 設為該 `agent_id`。

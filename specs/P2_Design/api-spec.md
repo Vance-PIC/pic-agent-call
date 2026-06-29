@@ -274,8 +274,8 @@ export function handleOrphanedMessages(
 //      才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若 `term_key` 相同（同視窗換 session 重新登記路徑），則保留訊息不予孤兒化。
 //   3. **主角色指定**：將被 force 的 agent 設為 `is_primary = 1`，
 //      同 session 內其他所有 agent 設為 `is_primary = 0`，
-//      確保其在 getRegistrations() SQL 排序（is_primary DESC, updated_at DESC, created_at ASC）中穩定排第一，
-//      成為 primary agent（▶ 標示位置）。
+//      確保其 status 設為 'active'（▶ 標示位置），其餘設為 'attached'。
+//      狀態列中角色順序固定依據註冊創建時間排序（created_at ASC），不隨主角色切換而位移。
 // - 回傳註冊結果清單，含 forced 與 term_key 欄位。
 export function registerAgent(
   db: DatabaseSync,
@@ -293,7 +293,7 @@ export function registerAgent(
 // - 檢測超時：將 last_seen 超過 1440 分鐘（24小時）的活躍角色標記為 'offline'。
 // - 歷史清理：每次檢測時自動 DELETE 清理 offline 且 last_seen 超過 10080 分鐘（7天）的角色紀錄。
 // - 新鮮度判定：當讀取時 last_seen 超過 120 分鐘（7200秒）的角色，在 display 燈號中顯示為黃燈 🟡（不改變其 DB 存活狀態）。
-// - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：主身份固定排在首位且其前置加上 ▶ 標示，其餘角色依序並列（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
+// - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：所有角色順序固定依據註冊創建時間排序（created_at ASC），主身份（status = 'active' 的角色）前置加上 ▶ 標示，其餘角色順序保持不動（No Jitter）（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
 // - unread 為該 sessionId 下所有活躍角色未讀數之總和。
 // - registered_agents 回傳該 session 登記的所有活躍角色資訊。
 // - primaryAgentId（可選）：由 server.mjs 從快取讀出，僅用於決定 ▶ 標示位置；
