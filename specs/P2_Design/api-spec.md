@@ -283,11 +283,16 @@ export function registerAgent(
   agentId: string,
   role?: string,
   forced?: boolean,
-  termKey?: string   // PIC_TERM_KEY GUID（v1.1.3）；未傳入則由內部環境變數解析
+  termKey?: string,   // PIC_TERM_KEY GUID（v1.1.3）；未傳入則由內部環境變數解析
+  timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
 ): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }
 
 // 查詢 agent 狀態（給 statusline 用）
+// - 執行心跳更新與超時處理（含 10 秒心跳降頻與背景非同步讀寫分離）。
+// - 檢測超時：將 last_seen 超過 1440 分鐘（24小時）的活躍角色標記為 'offline'。
+// - 歷史清理：每次檢測時自動 DELETE 清理 offline 且 last_seen 超過 10080 分鐘（7天）的角色紀錄。
+// - 新鮮度判定：當讀取時 last_seen 超過 120 分鐘（7200秒）的角色，在 display 燈號中顯示為黃燈 🟡（不改變其 DB 存活狀態）。
 // - display 格式改為各角色個別並列顯示，以空格區隔（不使用 | 符號）：主身份固定排在首位且其前置加上 ▶ 標示，其餘角色依序並列（例如：▶🔴1·AGY-PJM  🟢0·AGY-PDM  🔴3·AGY-SA）。
 // - unread 為該 sessionId 下所有活躍角色未讀數之總和。
 // - registered_agents 回傳該 session 登記的所有活躍角色資訊。
