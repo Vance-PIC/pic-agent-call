@@ -88,5 +88,10 @@
 
 ### 📅 PG1 追加代辦事項
 3. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 6 點，修改 `src/db.mjs` 中的 `resolveMemoryPaths` 函式，實施向上遞迴尋找專案根目錄防分裂機制，確保 MCP 伺服器長進程與背景 `agent-statusline.mjs` 讀寫同一個 SQLite 資料庫檔案。
+4. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 7 點，修改 `src/status.mjs` 的 `getAgentStatus` 與 `registerAgent` 函式，以及 `bin/server.mjs` 註冊工具：
+   * 限制 Heartbeat 更新只針對 `status = 'active'` 角色。
+   * 全域主動離線超時檢測移除 `session_id != ?` 限制，且支援讀取 API `timeout` 參數及 `settings.json` `"agentTimeoutSec"` 配置（預設提升為 24 小時/86400秒）。
+   * Forced 強制註冊時，將同 session 內但不在新登記名單中的殘留角色更新為 `status = 'offline'` (軟離線，不 DELETE)。
+
 
 

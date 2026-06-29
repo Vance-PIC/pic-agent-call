@@ -230,4 +230,21 @@ pic-agent-call/
    * **問題背景**：由於對話框 MCP 伺服器長進程與背景 `agent-statusline.mjs` 刷新腳本啟動時的當前工作目錄（`process.cwd()`）不同（前者可能為家目錄，後者為專案目錄），僅依賴 `process.cwd()` 會導致兩者分別讀寫不同的 `.memory/memory-graph.db` SQLite 檔案，造成狀態列與對話框資訊分裂不同步。
    * **防分裂解析防線**：`src/db.mjs` 中的 `resolveMemoryPaths` 函式在解析專案目錄 `.memory` 時，**必須**從當前目錄向上尋找直到發現 `.git` 或者是 `package.json` 以定位出專案根目錄，並以此根目錄下的 `.memory/memory-graph.db` 作為讀寫路徑，不得盲目依賴 `process.cwd()`，以此確保全進程 SSoT 資料庫一致。
 
+7. **多角色動態離線與生命週期防護規格 (v1.1.4 補正)**：
+   * **心跳防連坐喚醒**：`getAgentStatus` 內部的 Heartbeat 更新，**必須**限制為只更新活躍狀態的角色（`status = 'active'`），嚴禁將已離線或殘留的角色自動重設為活躍。
+     ```sql
+     UPDATE agents SET last_seen = datetime('now','localtime')
+     WHERE session_id = ? AND status = 'active'
+     ```
+   * **全域主動超時離線**：心跳檢測超時 SQL **必須移除 `session_id != ?` 的限制**。不論是否同會話，凡全系統中任何活躍角色的 `last_seen` 超過其註冊的 `agent_timeout_sec`（Zod timeout 參數或 `settings.json` 的 `"agentTimeoutSec"` 配置，預設提升為 **24 小時/86400 秒**），一律更新標記為 `status = 'offline'`。
+   * **強制覆寫時殘留軟離線**：當呼叫 `register_agent` 且 `force=true` 時，針對**同 session 內但不在新登記名單中**的殘留角色，一律實行軟離線標記：
+     ```sql
+     UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+     WHERE session_id = ? AND agent_id NOT IN (新名單 agent_id list)
+     ```
+   * **動態超時參數配置**：
+     * `register_agent` API 新增可選參數 `timeout`（秒數），傳入時直接寫入 DB `agents.agent_timeout_sec` 欄位。
+     * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutSec"`，作為未帶 API 參數時的預設值（最外層 Default 為 86400）。
+
+
 
