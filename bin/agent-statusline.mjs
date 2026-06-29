@@ -40,14 +40,7 @@ if (!regs || regs.length === 0) {
     querySessionId = resolveSessionId(callerType);
     try {
         regs = getRegistrations(db, querySessionId);
-        if (regs && regs.length > 0) {
-            primaryAgentId = regs[0].agent_id;
-            if (wtSession) {
-                try {
-                    db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ?').run(wtSession, querySessionId);
-                } catch (_) {}
-            }
-        }
+        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
     } catch (_) {}
 }
 
@@ -60,12 +53,5 @@ if (!status) {
     exitNoAgent();
 }
 
-let outStr = status.display;
-const isAgy = !!(process.env.ANTIGRAVITY_CONVERSATION_ID || (!process.env.CLAUDE_CODE_SESSION_ID && wtSession));
-if (isAgy) {
-    const parts = status.registered_agents.map(a => `${a.agent_id}(${a.unread})`);
-    outStr = `[${status.role}] ${parts.join(' ')}`;
-}
-
-process.stdout.write(outStr + '\n');
+process.stdout.write(status.display + '\n');
 process.exit(0);
