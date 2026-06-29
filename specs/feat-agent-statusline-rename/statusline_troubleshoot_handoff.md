@@ -92,6 +92,4 @@
    * 限制 Heartbeat 更新只針對 `status = 'active'` 角色。
    * 全域主動離線超時檢測移除 `session_id != ?` 限制，且支援讀取 API `timeout` 參數及 `settings.json` `"agentTimeoutSec"` 配置（預設提升為 24 小時/86400秒）。
    * Forced 強制註冊時，將同 session 內但不在新登記名單中的殘留角色更新為 `status = 'offline'` (軟離線，不 DELETE)。
-
-
-
+   * **歷史離線自動清理**：超時判定時，自動 `DELETE` 超過 7 天（可配置）的離線歷史註冊紀錄，確保資料庫不膨脹。

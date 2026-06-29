@@ -245,6 +245,7 @@ pic-agent-call/
    * **動態超時參數配置**：
      * `register_agent` API 新增可選參數 `timeout`（秒數），傳入時直接寫入 DB `agents.agent_timeout_sec` 欄位。
      * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutSec"`，作為未帶 API 參數時的預設值（最外層 Default 為 86400）。
-
-
-
+   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，`getAgentStatus` 每次執行超時判定時，**必須自動執行過期刪除**：凡 `status = 'offline'` 且其最後活躍時間（`last_seen`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 `DELETE` 清除。
+     ```sql
+     DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
+     ```
