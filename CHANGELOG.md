@@ -5,6 +5,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] - 2026-06-29
+
+### Added
+- **Three-State Agent Status Model**：`agents.status` 欄位新增 `attached` 狀態，形成 `active / attached / offline` 三態，取代舊 `is_primary` 欄位
+  - 同 session 第一個 register 的角色自動取得 `active`，後續角色為 `attached`
+  - `force=true` 重新登記時釋放既有 `active` 鎖，新名單第一個角色重取 `active`
+  - 舊 `is_primary` 索引（`idx_agents_session_primary`）已廢除，新增 `idx_agents_term_active` partial unique index（`WHERE status='active' AND term_key != ''`）
+- **settings.json 三可配置參數**：透過專案根目錄 `settings.local.json` 調整計時器閾值
+  - `agentTimeoutMin`（預設 1440 min / 24h）：agent 活躍超時，`register_agent` 未傳 `timeout` 時採用此值
+  - `statusLineFreshnessMin`（預設 120 min）：statusline 黃燈新鮮度閾值
+  - `historyPurgeMin`（預設 10080 min / 7 days）：offline 角色歷史清理週期
+- `src/db.mjs`: 新增 `readAgentSettings()` — 讀取 `settings.local.json` 三參數，含 default fallback
+- `src/db.mjs`: 新增 `_findProjectRoot()` — 從 `cwd` 向上遞迴找 `.git` / `package.json`，防止不同 cwd 啟動時讀寫不同 DB（DB 分裂防護）
+
+### Changed
+- `src/status.mjs`: `getAgentStatus` 超時掃描（timeout sweep）與歷史清理（history purge）改為**同步執行**，確保呼叫方立即可見最新狀態；僅 `last_seen` heartbeat 保留 `setImmediate` 10s 降頻
+- `src/status.mjs`: active lock release（迴圈前釋放 active → attached）僅在 `forced=true` 時執行，非 force register 不搶主角色
+- `src/status.mjs`: `resolvedTermKey` 預設值從 `null` 改為 `''`，符合 `term_key TEXT NOT NULL DEFAULT ''` 約束
+- `bin/server.mjs`: `register_agent` handler — `timeout` 未傳時從 `readAgentSettings().agentTimeoutMin` 讀取預設值（原為固定 86400s）
+- `hooks/pic-agent-autoreg-gate.js`: term_key 來源優先讀 `PIC_TERM_KEY`，fallback `WT_SESSION`
+- `scripts/setup-terminal-key.ps1`: 環境變數改設 `PIC_TERM_KEY`（取代 `WT_SESSION`）
+
+### Fixed
+- `src/status.mjs`: 修正 `resolvedTermKey=null` 導致 `NOT NULL constraint failed: agents.term_key` 錯誤
+- `src/db.mjs`: `resolveMemoryPaths()` 改用 `_findProjectRoot()` 取代直接 `process.cwd()`，防止從不同子目錄啟動 MCP 時路徑分裂
+
+### Tests
+- `tests/status.test.mjs`: `is_primary` 測試套件（P1-P5）全面改用 `status` 欄位語義驗證
+- `tests/db.test.mjs`: `resolveMemoryPaths` 測試在 tmpDir 建立 `package.json`，確保 `_findProjectRoot` 正確停在測試目錄
+- 136/136 tests pass
+
+---
+
 ## [1.1.4] - 2026-06-29
 
 ### Added
