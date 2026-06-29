@@ -511,12 +511,13 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
   test('38a. heartbeat 只更新 active 角色的 last_seen，不喚醒 offline 角色', () => {
     process.env.CLAUDE_CODE_SESSION_ID = 'sess-hb';
     registerAgent(db, 'sess-hb', 'CC-PG1', 'PG1');
-    // 手動將 CC-PG1 設為 offline
-    db.prepare(`UPDATE agents SET status='offline', last_seen='2000-01-01 00:00:00' WHERE agent_id='CC-PG1'`).run();
+    // 手動將 CC-PG1 設為 offline，last_seen 設 3 天前（不觸發 7-day 清理）
+    db.prepare(`UPDATE agents SET status='offline', last_seen=datetime('now','localtime','-3 days') WHERE agent_id='CC-PG1'`).run();
+    const beforeLastSeen = db.prepare(`SELECT last_seen FROM agents WHERE agent_id='CC-PG1'`).get().last_seen;
     getAgentStatus(db, 'sess-hb', 'CC-PG1');
     const row = db.prepare(`SELECT status, last_seen FROM agents WHERE agent_id='CC-PG1'`).get();
     expect(row.status).toBe('offline');
-    expect(row.last_seen).toBe('2000-01-01 00:00:00');
+    expect(row.last_seen).toBe(beforeLastSeen);
     delete process.env.CLAUDE_CODE_SESSION_ID;
   });
 
@@ -543,14 +544,33 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     process.env.CLAUDE_CODE_SESSION_ID = 'sess-a';
     registerAgent(db, 'sess-a', 'CC-PG1', 'PG1');
     // 另一個 session 的 agent，超時 1 秒，last_seen 設為很久以前
+    // last_seen 設 2 秒前，timeout=1 秒 → 超時但不到 7 天（不觸發清理）
     db.prepare(
       `INSERT INTO agents (agent_id, role, session_id, last_seen, status, agent_timeout_sec, updated_at)
-       VALUES ('AGY-SA1','SA','sess-b','2000-01-01 00:00:00','active',1,datetime('now','localtime'))`
+       VALUES ('AGY-SA1','SA','sess-b',datetime('now','localtime','-2 seconds'),'active',1,datetime('now','localtime'))`
     ).run();
 
     getAgentStatus(db, 'sess-a', 'CC-PG1');
     const agySa = db.prepare(`SELECT status FROM agents WHERE agent_id='AGY-SA1'`).get();
     expect(agySa.status).toBe('offline');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38d. 歷史離線清理：offline 且超過 7 天的角色被刪除
+  test('38d. getAgentStatus 清理 offline 且超過 7 天的殘留角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-clean';
+    registerAgent(db, 'sess-clean', 'CC-PG1', 'PG1');
+    // 插入一個 offline 且 8 天前最後活動的角色
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-OLD1','OLD','sess-old',datetime('now','localtime','-8 days'),'offline',datetime('now','localtime','-8 days'))`
+    ).run();
+    const before = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
+    expect(before).toBeTruthy();
+
+    getAgentStatus(db, 'sess-clean', 'CC-PG1');
+    const after = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
+    expect(after).toBeUndefined();
     delete process.env.CLAUDE_CODE_SESSION_ID;
   });
 });

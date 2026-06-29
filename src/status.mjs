@@ -343,6 +343,12 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
            AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
     ).run();
 
+    // 清理歷史離線：offline 且超過 7 天未活動的殘留角色直接刪除
+    db.prepare(
+        `DELETE FROM agents WHERE status = 'offline'
+           AND last_seen < datetime('now','localtime','-7 days')`
+    ).run();
+
     // primaryAgentId 由外部傳入（server.mjs 讀快取），預設用第一筆
     if (!primaryAgentId) primaryAgentId = regs[0].agent_id;
 
