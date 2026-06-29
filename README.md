@@ -12,7 +12,7 @@
 - **Memory** — 知識圖譜（SQLite），相容官方 MCP memory server schema
 - **Channel** — 跨 AI 訊息傳遞，狀態機：UNREAD → IN_PROGRESS → READ / ORPHANED
 - **Task-Broker** — 任務派發，feature+payload 冪等建立，BEGIN IMMEDIATE 原子搶鎖
-- **Agent Identity** — `register_agent` / `agent_status`，per-session 身份管理與 statusline 顯示
+- **Agent Identity** — `register_agent` / `agent_status`，三態活躍模型（active/attached/offline），支援多角色並存與 settings.json 分鐘級參數自訂
 
 ---
 
@@ -81,6 +81,7 @@ npm install
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MEMORY_DB_PATH` | SQLite DB 路徑 | `.memory/memory-graph.db`（自動解析至 cwd 或 `~/.memory`）|
+| `settings.json` 配置 | 自訂配置參數 (分) | 支援 `agentTimeoutMin`(預設 1440), `statusLineFreshnessMin`(預設 120), `historyPurgeMin`(預設 10080)|
 | `AGENT_ID` | Agent 識別名稱（可選，配合 `register_agent` 使用）| — |
 
 DB 路徑解析優先序：`MEMORY_DB_PATH` env → `settings.local.json` → `cwd/.memory` → `~/.memory`
@@ -164,7 +165,14 @@ CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → 
 🔴3·CC-SA1
 ```
 
-表示 agent `CC-SA1`，有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
+表示 active 主角色 `CC-SA1` 有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
+  
+  **狀態列三態燈號與新鮮度定義：**
+  * **主/從身份標示**：主角色前置 `▶` 標示，附屬/掛載角色 (`attached`) 僅顯示其燈號與未讀數。
+  * **🟢 綠燈**：在線且無未讀訊息。
+  * **🔴 紅燈**：在線且有未讀訊息。
+  * **🟡 黃燈**：閒置角色（超過 `statusLineFreshnessMin` 設定時間未更新心跳，預設 120 分鐘）。
+  * **自動清理**：離線角色超過 `historyPurgeMin` 分鐘（預設 7 天）將自動從 DB 清除。
 
 Claude Code 使用者可搭配 `bin/agent-statusline.mjs` 將此資訊顯示在 statusbar 中。
 
