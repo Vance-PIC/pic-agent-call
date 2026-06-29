@@ -227,7 +227,6 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
                      term_key = excluded.term_key,
                      last_seen = excluded.last_seen,
                      status = excluded.status,
-                     created_at = excluded.created_at,
                      updated_at = excluded.updated_at`
             ).run(aid, finalRole || null, sessionId, resolvedTermKey, newStatus);
 
