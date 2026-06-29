@@ -230,19 +230,23 @@ pic-agent-call/
    * **三態定義**：
      * **\`active\`**：主角色 (Primary)。同一 \`term_key\` 物理視窗在同時間僅能有一個 \`active\` 角色，獨佔對話框讀信與 Claim/Ack 特權。
      * **\`attached\`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
-     * **\`offline\`**：離線/超時角色。不顯示於狀態列中。
-   * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 \`active\` 角色：
-     \`\`\`sql
+     * **`active`**：主角色 (Primary)。同一 `term_key` 物理視窗在同時間僅能有一個 `active` 角色，獨佔對話框讀信與 Claim/Ack 特權。
+     * **`attached`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
+     * **`offline`**：離線/超時角色。不顯示於狀態列中。
+   * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色：
+     ```sql
      CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
-     \`\`\`
-   * **視窗移轉 (A/B 情境整批轉移)**：當新會話在當前視窗啟動時，先斷開舊會話的活躍狀態，再整批繫結：
-     \`\`\`sql
-     -- 1. 斷開此視窗下其他舊會話的活躍狀態（設為 offline）
-     UPDATE agents SET status = 'offline' WHERE term_key = ? AND session_id != ?
-     -- 2. 將此視窗整批繫結給新會話角色，第一個角色設為 'active'，其餘設為 'attached'
-     \`\`\`
-   * **防 NULL 抹除**：若 API 傳入的 \`termKey\` 為空，程式**強制沿用並保留 DB 中已有的 \`term_key\` 值，禁止覆寫為空**。
      ```
+   * **視窗移轉 (A/B 情境整批轉移與主角色重設防衝突)**：
+     * 當新會話在當前視窗啟動時，先斷開舊會話的活躍狀態，再整批繫結：
+       ```sql
+       -- 1. 斷開此視窗下其他舊會話的活躍狀態（設為 offline）
+       UPDATE agents SET status = 'offline' WHERE term_key = ? AND session_id != ?
+       ```
+     * **防 Active 鎖定衝突**：當同一個會話（session_id）重新登記並調整角色主從順序時，為了防止在 `for` 迴圈處理第一個角色設為 `'active'` 時，與資料庫中殘留的舊 active 角色發生唯一索引衝突，`registerAgent` **必須在執行註冊迴圈前，先將當前會話（session_id）下的所有角色狀態全部降級/重設為 `'attached'` 以釋放 active 鎖定**：
+       ```sql
+       UPDATE agents SET status = 'attached', updated_at = datetime('now','localtime') WHERE session_id = ?
+       ```
    * **防 NULL 抹除**：若 API 傳入的 `termKey` 為空，程式**強制沿用並保留 DB 中已有的 `term_key` 值，禁止覆寫為空**。
 
 6. **SQLite 資料庫路徑解析防分裂規格 (v1.1.4 補正)**：
