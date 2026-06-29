@@ -197,3 +197,26 @@ pic-agent-call/
 | **一道** | `session_id` 命中 DB | `UPDATE agents SET term_key = WT_SESSION`（resume 換視窗場景）|
 | **二道** | `term_key`（`WT_SESSION`）命中 DB | `UPDATE agents SET session_id = <new_session_id>`（同視窗新 session）|
 | **三道** | 兩者均不命中 | 若無 `force`，block 並顯示診斷資訊（session prefix、WT_SESSION prefix）與 `register_agent` 呼叫範例 |
+| **四道 (v1.1.4)** | `WT_SESSION` 存在且與 DB `term_key` 不同 | 無條件直接覆寫該 `session_id` 下所有角色的 `term_key`，達成即時視窗 Resume 轉移 |
+
+---
+
+## 6.12 v1.1.4 Code Review 安全與併發防禦規格
+
+針對 P3 階段 Code Review 所發現的併發、時區、錯誤吞噬與授權漏洞，本專案實施以下安全防線與設計規範：
+
+1. **TOCTOU Race 併發防護防線 (C1, I3, I5)**：
+   * **任務狀態變更 (C1)**：`completeTask` 與 `failTask` 核心 API 在執行「狀態預檢」與「UPDATE 狀態更新」時，**必須**使用 `BEGIN IMMEDIATE` 與 `COMMIT` 資料庫事務（Transaction）包裹。且在 UPDATE 執行後，必須嚴格檢查資料庫受影響列數（`changes`），唯有 `changes > 0` 且無 error 時方可回傳 `{ success: true }`；若已被搶先完成或狀態不符，應 Rollback 並回傳 `{ success: false, reason: 'Task status changed' }`。
+   * **廣播對象鎖定 (I3)**：在 `sendMessage` 進行 `all` (廣播) 訊息發送時，查詢所有活躍 agent 的 `SELECT` 語句**必須**移入 `BEGIN IMMEDIATE` 事務內部執行，避免在查詢與寫入訊息的空隙中，活躍角色狀態發生變更而導致幽靈接收者。
+   * **訊息領取與確認 (I5)**：`claimMessage` 與 `ackMessage` 中的主角色解析與權限校驗，**必須**包含在資料庫事務內部，或實施 best-effort 讀寫一致性防護，防止在讀取角色到搶鎖/確認訊息之間發生主角色越權或奪占。
+
+2. **時區與時間格式統一 SSoT 規格 (I1, I2)**：
+   * 全模組（含 `src/tasks.mjs`、`src/memory.mjs` 等）寫入或更新時間欄位（如 `completed_at`、`updated_at`、`created_at` 等）時，**禁止在 JavaScript 端使用 `getTimezoneOffset` 等手動 offset 運算**，以防 DST 邊界或非整小時時區計算被截斷。
+   * 資料庫內所有時間寫入，**統一、強制使用 SQLite 的 `datetime('now','localtime')` 函式**，確保全系統時間事實的唯一來源與排序一致。
+
+3. **健壯的錯誤處理與防護規格 (C2, I4)**：
+   * **JSON 快照同步例外處理 (C2)**：`db.mjs` 中的 `_doSyncDbToJson` 防抖同步，**禁止完全吃掉 exception**。在寫入或 rename 失敗時，必須使用 `console.error` 完整記錄錯誤堆疊，且應提供健康狀態旗標以防 `memory-graph.json` 靜默損壞而使 Swarm Swarm 記憶斷鏈。
+   * **Schema 遷移容錯判定 (I4)**：在 `db.mjs` schema migration 執行 `ALTER TABLE` 時，**禁止盲目吞噬所有 exception**。必須實施條件判斷：僅允許 swallow 包含 `duplicate column` 類型的重複新增錯誤，其餘所有結構錯誤（如 table 缺失、DB 損壞）必須主動 rethrow 或記錄嚴重日誌，確保遷移安全性。
+
+4. **測試覆蓋防線規格 (I6)**：
+   * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
