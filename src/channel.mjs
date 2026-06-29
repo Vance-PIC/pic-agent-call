@@ -140,14 +140,18 @@ export function listUnread(db, receiver, sessionId) {
 }
 
 function _resolvePrimaryAgentId(db, sessionId) {
-    const wtSession = process.env.WT_SESSION;
-    if (wtSession) {
-        const termRegs = getRegistrationsByTermKey(db, wtSession);
-        if (termRegs && termRegs.length > 0) return termRegs[0].agent_id;
+    const termKey = process.env.PIC_TERM_KEY || process.env.WT_SESSION;
+    if (termKey) {
+        const termRegs = getRegistrationsByTermKey(db, termKey);
+        if (termRegs && termRegs.length > 0) {
+            return (termRegs.find(r => r.status === 'active') ?? termRegs[0]).agent_id;
+        }
     }
     const sid = sessionId || resolveSessionId();
     const regs = getRegistrations(db, sid);
-    if (regs && regs.length > 0) return regs[0].agent_id;
+    if (regs && regs.length > 0) {
+        return (regs.find(r => r.status === 'active') ?? regs[0]).agent_id;
+    }
     return null;
 }
 
