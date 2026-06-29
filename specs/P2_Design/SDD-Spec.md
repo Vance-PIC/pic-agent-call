@@ -242,22 +242,25 @@ pic-agent-call/
      -- 2. 將此視窗整批繫結給新會話角色，第一個角色設為 'active'，其餘設為 'attached'
      \`\`\`
    * **防 NULL 抹除**：若 API 傳入的 \`termKey\` 為空，程式**強制沿用並保留 DB 中已有的 \`term_key\` 值，禁止覆寫為空**。
+     ```
+   * **防 NULL 抹除**：若 API 傳入的 `termKey` 為空，程式**強制沿用並保留 DB 中已有的 `term_key` 值，禁止覆寫為空**。
 
 6. **SQLite 資料庫路徑解析防分裂規格 (v1.1.4 補正)**：
-   * **防分裂解析防線**：\`src/db.mjs\` 中的 \`resolveMemoryPaths\` 函式在解析專案目錄 \`.memory\` 時，**必須**從當前目錄向上尋找直到發現 \`.git\` 或者是 \`package.json\` 以定位出專案根目錄，並以此根目錄下的 \`.memory/memory-graph.db\` 作為讀寫路徑，不得盲目依賴 \`process.cwd()\`，以此確保全進程 SSoT 資料庫一致。
+   * **防分裂解析防線**：`src/db.mjs` 中的 `resolveMemoryPaths` 函式在解析專案目錄 `.memory` 時，**必須**從當前目錄向上尋找直到發現 `.git` 或者是 `package.json` 以定位出專案根目錄，並以此根目錄下的 `.memory/memory-graph.db` 作為讀寫路徑，不得盲目依賴 `process.cwd()`，以此確保全進程 SSoT 資料庫一致。
 
 7. **多角色生命週期防護與雙重超時規格 (v1.1.4 補正)**：
-   * **心跳防連坐與 Attached 豁免**：\`getAgentStatus\` 內部的 Heartbeat 更新，**僅限更新 \`status IN ('active', 'attached')\` 的在線角色**，更新其 \`last_seen\` 以維持其掛載狀態，嚴禁喚醒已 \`offline\` 的離線角色。
-     \`\`\`sql
-     UPDATE agents SET last_seen = datetime('now','localtime')
-     WHERE session_id = ? AND status IN ('active', 'attached')
-     \`\`\`
+    * **心跳防連坐與 Attached 豁免（含 10 秒降頻與讀寫分離）**：
+      * `getAgentStatus` 內部的 Heartbeat 更新，**僅限更新 `status IN ('active', 'attached')` 的在線角色**，更新其 `last_seen` 以維持其掛載狀態，嚴禁喚醒已 `offline` 的離線角色。
+      * **心跳降頻（10 秒限制）**：在執行任何 DB 寫入更新前，必須先 SELECT 查詢當前 session 角色的 `last_seen`。如果其與當前時間差小於 **10 秒**，則**直接跳過所有心跳寫入操作（UPDATE）**，僅執行唯讀查詢（SELECT）。
+      * **非同步背景更新**：如果時間差大於等於 10 秒需要執行 `UPDATE agents`，此 Update 操作必須以**背景非同步（fire-and-forget）**非阻塞方式執行，確保狀態列輪詢（`getAgentStatus`）能立即返回未讀數結果，絕不被任何 SQLite 寫鎖定所阻塞。
+      ```sql
+      UPDATE agents SET last_seen = datetime('now','localtime')
+      WHERE session_id = ? AND status IN ('active', 'attached')
+      ```
    * **動態超時參數配置**：
-     * \`register_agent\` API 新增可選參數 \`timeout\`（秒數），傳入時直接寫入 DB \`agents.agent_timeout_sec\` 欄位。
-     * 支援在全域或專用 \`settings.json\` 裡配置 \`"agentTimeoutSec"\`，作為未帶 API 參數時的預設值（Session 存活超時預設提升為 **24 小時/86400 秒**）。
+     * `register_agent` API 新增可選參數 `timeout`（秒數），傳入時直接寫入 DB `agents.agent_timeout_sec` 欄位。
+     * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutSec"`，作為未帶 API 參數時的預設值（Session 存活超時預設提升為 **24 小時/86400 秒**）。
    * **雙重超時閾值定義**：
-     * **Session Timeout (會話存活超時: 24 小時)**：凡全系統中任何活躍角色的 \`last_seen\` 超過其 \`agent_timeout_sec\` 時，一律自動更新標記為 \`status = 'offline'\`。這是為了控制資料庫資料存活期。
-     * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 秒)**：此閾值不寫入 DB，僅由狀態列渲染腳本（\`agent-statusline.mjs\`）在讀取時，用於判定角色是否為黃燈/灰燈（例如 \`last_seen\` 超過 120 秒未更新，狀態列顯示其為非即時在線），不修改其 DB 存活狀態。
     * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，\`getAgentStatus\` 每次執行超時判定時，**必須自動執行過期刪除**：凡 \`status = 'offline'\` 且其最後活躍時間（\`last_seen\`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 \`DELETE\` 清除。
       \`\`\`sql
       DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
