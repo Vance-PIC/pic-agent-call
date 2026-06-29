@@ -12,7 +12,7 @@
 - **Memory** — 知識圖譜（SQLite），相容官方 MCP memory server schema
 - **Channel** — 跨 AI 訊息傳遞，狀態機：UNREAD → IN_PROGRESS → READ / ORPHANED
 - **Task-Broker** — 任務派發，feature+payload 冪等建立，BEGIN IMMEDIATE 原子搶鎖
-- **Agent Identity** — `register_agent` / `agent_status`，三態活躍模型（active/attached/offline），支援多角色並存與 settings.json 分鐘級參數自訂
+- **Agent Identity** — `register_agent` / `agent_status`，三態活躍模型（active/attached/offline），支援多角色並存、No Jitter 固定顯示順序（僅動箭頭）與 settings.json 分鐘自訂配置
 
 ---
 
@@ -168,7 +168,8 @@ CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → 
 表示 active 主角色 `CC-SA1` 有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
   
   **狀態列三態燈號與新鮮度定義：**
-  * **主/從身份標示**：主角色前置 `▶` 標示，附屬/掛載角色 (`attached`) 僅顯示其燈號與未讀數。
+  * **主/從身份標示與 No Jitter 排序**：所有活躍角色固定以註冊創建時間 (`created_at ASC`) 排列顯示，順序不會因主從切換或更新而位移晃動；主角色（`active`）前方會標示 `▶`，該標記隨角色切換而動態跳移。
+  * **掛載角色**：附屬/掛載角色 (`attached`) 僅顯示其燈號與未讀數，禁止讀信與 Claim 操作（403 阻斷）。
   * **🟢 綠燈**：在線且無未讀訊息。
   * **🔴 紅燈**：在線且有未讀訊息。
   * **🟡 黃燈**：閒置角色（超過 `statusLineFreshnessMin` 設定時間未更新心跳，預設 120 分鐘）。
