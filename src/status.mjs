@@ -72,18 +72,16 @@ export function getRegistration(db, sessionId) {
     return getRegistrations(db, sessionId)[0] ?? null;
 }
 
-// v1.1.0 多角色：查詢 session 所有已註冊的活躍角色
-// 排序：active 排首位, updated_at DESC, created_at ASC
+// v1.2.0 No Jitter：固定依 created_at ASC 排列，▶ 僅標示 active 位置不移動順序
 export function getRegistrations(db, sessionId) {
     return db.prepare(
-        `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents WHERE session_id = ? AND status IN ('active','attached') ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, created_at ASC`
+        `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents WHERE session_id = ? AND status IN ('active','attached') ORDER BY created_at ASC`
     ).all(sessionId);
 }
 
-// v1.1.3：直接用 term_key（WT_SESSION）查詢，跳過 session_id 中間層
 export function getRegistrationsByTermKey(db, termKey) {
     return db.prepare(
-        `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents WHERE term_key = ? AND status IN ('active','attached') ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, created_at ASC`
+        `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents WHERE term_key = ? AND status IN ('active','attached') ORDER BY created_at ASC`
     ).all(termKey);
 }
 
@@ -386,12 +384,8 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     let totalUnread = 0;
     const parts = [];
 
-    // active 排首位
-    const sorted = [...regs].sort((a, b) =>
-        a.agent_id === primaryAgentId ? -1 : b.agent_id === primaryAgentId ? 1 : 0
-    );
-
-    for (const { agent_id, role } of sorted) {
+    // No Jitter：regs 已依 created_at ASC 排列，不重新排序
+    for (const { agent_id, role } of regs) {
         let row;
         if (role) {
             row = unreadStmt.get(agent_id, `${role}?`);
@@ -410,7 +404,7 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     }
 
     const display = parts.join('  ');
-    const primary = sorted[0];
+    const primary = regs.find(r => r.agent_id === primaryAgentId) ?? regs[0];
 
     return {
         agent_id: primary.agent_id,
