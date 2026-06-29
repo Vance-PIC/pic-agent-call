@@ -31,6 +31,13 @@
   * `"statusLineFreshnessMin"`：黃燈新鮮度閾值（預設 120 分鐘 / 2小時）。
   * `"historyPurgeMin"`：歷史離線清理存活期（預設 10080 分鐘 / 7天）。
 
+### 6. No Jitter 固定顯示順序狀態列顯示優化 (Sorting Consistency)
+* **視覺體驗改進**：狀態列上的角色左右排列順序固定依據註冊創建時間 (`created_at ASC`) 進行排列。切換主從關係或心跳更新時，角色名稱不會左右位移或交叉閃爍。
+* **動態指針跳動**：僅 `▶` 箭頭會隨當前 active 主角色的切換而在其名稱前動態跳移，維持界面極致穩定。
+
+### 7. 狀態列傳參覆寫 Bug 搶修 (Parameter Override Bugfix)
+* **修復問題**：修復了 `bin/agent-statusline.mjs` 呼叫端自作聰明將名單首位角色賦值給 `primaryAgentId` 並作為第三個參數傳給 `getAgentStatus`，導致箭頭永遠被最早創建的角色（如 SA1）強制鎖死的 Bug。目前已完全省略此參數，交由後台依據實體 `status = 'active'` 自主精確解析主角色。
+
 ---
 
 ## 🛠️ 安全防禦改進 (Security & Guard Upgrades)
