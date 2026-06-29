@@ -55,7 +55,7 @@ pic-agent-call/
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |
 | `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢 | src/db.mjs, node:os, node:crypto |
 | `bin/server.mjs` | MCP transport + 20 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
-| `bin/agent-statusline.mjs` | CC/AGY statusbar hook CLI：優先以 `WT_SESSION` 查 `agents.term_key`（`getRegistrationsByTermKey`），查無結果才 fallback 至 `session_id`（AGY 或無 `WT_SESSION` 環境）；DB 無結果則輸出 `NO AGENT` | src/db.mjs, src/status.mjs |
+| `bin/agent-statusline.mjs` | CC/AGY statusbar hook CLI：優先以 `PIC_TERM_KEY` 查 `agents.term_key`（`getRegistrationsByTermKey`），查無結果才 fallback 至 `session_id`（AGY 或無 `PIC_TERM_KEY` 環境）；DB 無結果則輸出 `NO AGENT` | src/db.mjs, src/status.mjs |
 | `bin/agent-statusline-wrapper.mjs` | Gemini/Antigravity 狀態列整合包裝器：拼裝 Quota 狀態與 Agent 訊息狀態。**v1.1.4 重構**：廢棄 `process.stdin.on('end')` 等待觸發模式，改為啟動時以**非阻塞式 readline（50ms timeout）** 讀取 stdin 並同時解析環境變數（`ANTIGRAVITY_CONVERSATION_ID`、`MEMORY_DB_PATH`），解決 AGY CLI 不關閉 stdin 造成的 1500ms 超時 `exit status 1` 問題。50ms 後若無 stdin 輸入則以環境變數降級處理；若環境變數亦未設定則以空值降級。 | node:child_process, node:fs, node:path, node:os, node:readline |
 | `~/.gemini/statusline-wrapper.mjs` | **Thin Forwarder（使用者層）**：由 `setup-agy-statusline.mjs` 安裝至使用者家目錄，作為 `settings.json` `statusLine.command` 的進入點。**⚠️ 禁止硬編碼**：forwarder 內的 `target` 路徑嚴禁寫死為固定絕對路徑；必須由 `setup-agy-statusline.mjs` 在安裝執行時動態解析出 `bin/agent-statusline-wrapper.mjs` 的真實絕對路徑，並以字串替換方式注入至 forwarder 的 `target` 變數中後，再寫入使用者家目錄。如此可確保跨使用者、跨安裝路徑皆能正確執行，且命名變更時只需重新執行安裝腳本即可，無需手動修改 forwarder。 | node:child_process, node:fs, node:os |
 
@@ -105,7 +105,7 @@ pic-agent-call/
 
 #### register_agent 規範（v1.1.3）
 
-`register_agent` MCP tool 更新 SQLite `agents` 表，並將 `WT_SESSION`（Windows Terminal session GUID）寫入 `agents.term_key` 欄位作為跨 session 識別依據。
+`register_agent` MCP tool 更新 SQLite `agents` 表，並將 `PIC_TERM_KEY`（Windows Terminal session GUID）寫入 `agents.term_key` 欄位作為跨 session 識別依據。
 
 > **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位承擔。
 
@@ -150,15 +150,15 @@ pic-agent-call/
         1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 註冊（如 `CC-PG1` 或 `AGY-SA`）。
         2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
-        4.  **Hook 強制等級**：`autoreg-gate` hook 採 **`block`**（v1.1.3 已升級，從 warn 改為 block）。block 訊息含診斷資訊（session prefix、WT_SESSION prefix）與 `register_agent` 呼叫範例，協助 AI 快速定位並完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        4.  **Hook 強制等級**：`autoreg-gate` hook 採 **`block`**（v1.1.3 已升級，從 warn 改為 block）。block 訊息含診斷資訊（session prefix、PIC_TERM_KEY prefix）與 `register_agent` 呼叫範例，協助 AI 快速定位並完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
     *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
     *   API 內部執行安全性校驗與接收信箱判定：
-        *   **當前活躍角色定位**：由 DB 查詢 `agents.term_key = WT_SESSION`（若 `WT_SESSION` 環境變數存在）取得角色列表，其第一筆即為當前活躍角色（主身份）；若無 `WT_SESSION` 或查無資料，則 fallback 使用 `sessionId` 查詢 `agents` 表之第一筆作為活躍角色。本地快取檔 `agent-sessions/<termKey>.json` 已於 v1.1.3 廢棄，不再作為角色識別依據。
+        *   **當前活躍角色定位**：由 DB 查詢 `agents.term_key = PIC_TERM_KEY`（若 `PIC_TERM_KEY` 環境變數存在）取得角色列表，其第一筆即為當前活躍角色（主身份）；若無 `PIC_TERM_KEY` 或查無資料，則 fallback 使用 `sessionId` 查詢 `agents` 表之第一筆作為活躍角色。本地快取檔 `agent-sessions/<termKey>.json` 已於 v1.1.3 廢棄，不再作為角色識別依據。
         *   `channel_list_unread`：若傳入特定的 `receiver` 參數，該 receiver 必須為當前活躍角色（或其對應之 role 郵箱），否則拋出 403 越權錯誤。返回結果應包含發送給該活躍角色、其 role 郵箱（格式為 `role?`）、以及發送給 `'any'` 且狀態為 `'UNREAD'` 的訊息。若 `receiver` 未指定或為 `'all'`，則系統自動拉取該 `sessionId` 綁定之所有活躍角色各自未讀訊息的聯集。
         *   `channel_claim` 與 `channel_ack`：嚴格限制只能操作當前活躍角色有權處理的訊息。操作者傳入之 `agent_id` 必須與當前活躍角色（主身份）完全相符，且訊息接收者（`receiver`）必須為該當前活躍角色（或其 `role?` 郵箱，或為 `'any'` 且狀態為 `'UNREAD'`），禁止越權搶鎖或確認非本活躍角色的訊息。若傳入之 `agent_id` 與定位出的當前活躍角色不符，API 必須拒絕並回傳 403 錯誤。
 10. **一會話多角色並存與接管規範 (One-Session Multi-Identities & Takeover)**：
-    *   **資料庫約束調整**：物理刪除 `agents` 表上對 `session_id` 的唯一索引 (`idx_agents_session_id`)。允許一個會話 (`session_id`) 同時登記多個不同的 `agent_id`（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM` 同時綁定同一個 `session_id`），並均處於 `active` 狀態。
+    *   **資料庫約束調整**：物理刪除 `agents` 表上對 `session_id` 的唯一索引 (`idx_agents_session_id`)。允許一個會話 (`session_id`) 同時登記多個不同的 `agent_id`（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM` 同時綁定同一個 `session_id`），第一個為 `active` (主角色)，其餘為 `attached` (掛載角色)。
     *   **多角色分隔解析**：`register_agent` 支援在 `agent_id` 與 `role` 參數中傳入以逗號（半形 `,` 或全形 `，`）、頓號（`、`）、斜線（`/`）、加號（`+`）、分號（`;` 或 `；`）或空格等分隔的多個字串（例如 `agent_id` 填入 `"SA/PG/QA/PJM/PDM"` 或是 `"AGY-SA+AGY-PG+AGY-QA+AGY-PJM+AGY-PDM"`）。系統在執行 `register_agent` 時**必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）進行 Token 分割**，將其拆解成多個獨立的角色分別呼叫註冊流程，嚴禁將整串含有分隔符號的字串直接當作單一 `agent_id` 寫入資料庫。
     *   **平台前綴補全與角色自動推導**：若拆分後的子角色識別碼（例如 `SA`）不包含平台前綴（`AGY-` 或 `CC-`）：
         *   系統應根據當前 `sessionId` 的類型自動補齊前綴。若為 Antigravity 連線（前綴 `agy-`）則補上 `AGY-` 前綴變成 `AGY-SA`；若為 Claude Code 連線（前綴 `cc-`）則補上 `CC-SA`。
@@ -181,12 +181,12 @@ pic-agent-call/
     *   **強制接管與孤兒訊息限制**（v1.1.4 強化）：
         *   `force: true` 的強行接管行為僅限於「相同 `agent_id` 被另一個不同 `session_id` 再次註冊」的衝突場景。此時只允許從資料庫中更新該特定 `agent_id` 的 `session_id` 與 `term_key` 綁定，嚴禁波及當前 DB 中該舊 Session 綁定的其他角色紀錄。
         *   **精準孤兒判定**：當執行強制接管時，只有當該 `agent_id` 原本綁定的 `term_key`（舊視窗）與新傳入的 `termKey`（當前視窗）**不同（跨 Terminal 視窗奪取）**時，才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若兩者 `term_key` 相同（同物理視窗重啟會話 Resume 移轉），則必須保留所有未讀訊息不予孤兒化。
-        *   **主角色指定與 displays**：強制接管成功後，該被 force 的角色之 `is_primary` 被設定為 `1`，同會話其他角色的 `is_primary` 均重設為 `0`，以確保其在 `getRegistrations` 中依 `ORDER BY is_primary DESC` 穩定排在首位成為主角色（`▶` 標示）。
-        *   **[廢棄 v1.1.3] 被接管舊端快取檔案同步**：此機制已移除（快取檔已廢棄）。接管後的一致性由 DB `agents.term_key` 欄位與 `is_primary` 直接反映，無需同步快取檔。
+        *   **主角色指定與 displays**：強制接管成功後，該被 force 的角色之 `status` 被設定為 `'active'`，同會話其他角色的 `status` 均重設為 `'attached'`，以確保其穩定排在首位成為主角色（`▶` 標示）。
+        *   **[廢棄 v1.1.3] 被接管舊端快取檔案同步**：此機制已移除（快取檔已廢棄）。接管後的一致性由 DB `agents.term_key` 欄位與 `status` 直接反映，無需同步快取檔。
 
 ---
 
-## 6.11 WT_SESSION / term_key 三道防線 (v1.1.3)
+## 6.11 PIC_TERM_KEY / term_key 三道防線 (v1.1.3)
 
 詳細文件：[docs/wt-session-term-key.md](../../docs/wt-session-term-key.md)
 
@@ -194,10 +194,10 @@ pic-agent-call/
 
 | 防線 | 觸發條件 | 行為 |
 |------|---------|------|
-| **一道** | `session_id` 命中 DB | `UPDATE agents SET term_key = WT_SESSION`（resume 換視窗場景）|
-| **二道** | `term_key`（`WT_SESSION`）命中 DB | `UPDATE agents SET session_id = <new_session_id>`（同視窗新 session）|
-| **三道** | 兩者均不命中 | 若無 `force`，block 並顯示診斷資訊（session prefix、WT_SESSION prefix）與 `register_agent` 呼叫範例 |
-| **四道 (v1.1.4)** | `WT_SESSION` 存在且與 DB `term_key` 不同 | 無條件直接覆寫該 `session_id` 下所有角色的 `term_key`，達成即時視窗 Resume 轉移 |
+| **一道** | `session_id` 命中 DB | `UPDATE agents SET term_key = PIC_TERM_KEY`（resume 換視窗場景）|
+| **二道** | `term_key`（`PIC_TERM_KEY`）命中 DB | `UPDATE agents SET session_id = <new_session_id>`（同視窗新 session）|
+| **三道** | 兩者均不命中 | 若無 `force`，block 並顯示診斷資訊（session prefix、PIC_TERM_KEY prefix）與 `register_agent` 呼叫範例 |
+| **四道 (v1.1.4)** | `PIC_TERM_KEY` 存在且與 DB `term_key` 不同 | 無條件直接覆寫該 `session_id` 下所有角色的 `term_key`，達成即時視窗 Resume 轉移 |
 
 ---
 
@@ -258,7 +258,16 @@ pic-agent-call/
    * **雙重超時閾值定義**：
      * **Session Timeout (會話存活超時: 24 小時)**：凡全系統中任何活躍角色的 \`last_seen\` 超過其 \`agent_timeout_sec\` 時，一律自動更新標記為 \`status = 'offline'\`。這是為了控制資料庫資料存活期。
      * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 秒)**：此閾值不寫入 DB，僅由狀態列渲染腳本（\`agent-statusline.mjs\`）在讀取時，用於判定角色是否為黃燈/灰燈（例如 \`last_seen\` 超過 120 秒未更新，狀態列顯示其為非即時在線），不修改其 DB 存活狀態。
-   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，\`getAgentStatus\` 每次執行超時判定時，**必須自動執行過期刪除**：凡 \`status = 'offline'\` 且其最後活躍時間（\`last_seen\`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 \`DELETE\` 清除。
-     \`\`\`sql
-     DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
-     \`\`\`
+    * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，\`getAgentStatus\` 每次執行超時判定時，**必須自動執行過期刪除**：凡 \`status = 'offline'\` 且其最後活躍時間（\`last_seen\`）已超過 **7 天** 的歷史紀錄，一律自資料庫中徹底執行 \`DELETE\` 清除。
+      \`\`\`sql
+      DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-7 days')
+      \`\`\`
+
+8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正)**：
+   * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝與引導環境設定腳本。
+   * **自動注入行為**：當此安裝或引導腳本執行時，必須在使用者當前的 Shell 環境中檢測並自動注入非空視窗識別碼：
+     * 若發現當前視窗環境變數 `$env:PIC_TERM_KEY`（或舊的 `WT_SESSION`）不存在：
+       * 腳本**必須自動產生一組全新的 UUID 碼**。
+       * 在 Windows (PowerShell/Cmd) 環境下，腳本必須將此 UUID 自動寫入當前活動視窗的環境變數：`$env:PIC_TERM_KEY = "UUID"`。
+       * 在 Unix/Linux/macOS (Bash/Zsh) 環境下，腳本必須將此 UUID 自動執行 `export PIC_TERM_KEY="UUID"` 寫入該 Shell 視窗。
+     * 這保證了後續從該視窗啟動的任何對話框與狀態列定時重新整理進程，都能 100% 自然繼承並共享完全相同的 `PIC_TERM_KEY`。

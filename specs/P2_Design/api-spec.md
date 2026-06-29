@@ -115,7 +115,7 @@ export function sendMessage(
 
 // 列出未讀（自動釋放 IN_PROGRESS > 15 分鐘 → UNREAD）
 // ⚠️ v1.1.0 安全強化 / v1.1.3 更新：執行橫向越權檢驗。
-// - 若指定 receiver，該 receiver 必須為當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
+// - 若指定 receiver，該 receiver 必須為當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
 // - 若 receiver 未指定或為 'all'，則自動列出該 sessionId 所綁定之所有活躍角色之未讀訊息的聯集。
 export function listUnread(
   db: DatabaseSync,
@@ -125,7 +125,7 @@ export function listUnread(
 
 // 原子搶鎖（BEGIN IMMEDIATE）
 // ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份校驗。
-// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）完全吻合，否則拒絕。
+// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）完全吻合，否則拒絕。
 // - 訊息的接收者必須為該 agent_id（或其 role?、或 'any'），否則拒絕操作。
 export function claimMessage(
   db: DatabaseSync,
@@ -137,7 +137,7 @@ export function claimMessage(
 
 // ACK 確認完成（lock_owner 須吻合）
 // ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份與搶鎖者吻合校驗。
-// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = WT_SESSION 識別）完全吻合，且必須為原始搶鎖者，否則拒絕。
+// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）完全吻合，且必須為原始搶鎖者，否則拒絕。
 export function ackMessage(
   db: DatabaseSync,
   message_id: string,
@@ -221,7 +221,7 @@ export function resolveSessionId(callerType?: 'cc' | 'agy' | null): string
 export function getRegistrations(
   db: DatabaseSync,
   sessionId: string
-): Array<{ agent_id: string, role: string, session_id: string, term_key: string | null, is_primary: number }>
+): Array<{ agent_id: string, role: string, session_id: string, term_key: string | null, status: 'active' | 'attached' | 'offline' }>
 
 // 以 session_id 查詢第一個已登記的活躍角色（向下相容單角色版本）
 export function getRegistration(
@@ -229,7 +229,7 @@ export function getRegistration(
   sessionId: string
 ): { agent_id: string, role: string, session_id: string, term_key: string | null } | null
 
-// 以 term_key（WT_SESSION）查詢 agents 表中所有已註冊的活躍角色（v1.1.3 新增）
+// 以 term_key（PIC_TERM_KEY）查詢 agents 表中所有已註冊的活躍角色（v1.1.3 新增）
 // statusline 優先使用此函式識別當前視窗的活躍角色；找不到才 fallback 至 getRegistrations
 export function getRegistrationsByTermKey(
   db: DatabaseSync,
@@ -264,8 +264,8 @@ export function handleOrphanedMessages(
 // ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線：
 // - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串。
 // - 系統內部使用正規表達式 `/[,\/\\+，、；;\s]+/` 分割為多個角色，各自執行三道防線 upsert 邏輯：
-//   - 一道：session_id 命中 DB → UPDATE agents SET term_key = WT_SESSION（resume 換視窗）
-//   - 二道：term_key（WT_SESSION）命中 DB → UPDATE agents SET session_id = <new_session_id>（同視窗新 session）
+//   - 一道：session_id 命中 DB → UPDATE agents SET term_key = PIC_TERM_KEY（resume 換視窗）
+//   - 二道：term_key（PIC_TERM_KEY）命中 DB → UPDATE agents SET session_id = <new_session_id>（同視窗新 session）
 //   - 三道：兩者均不命中 → 若無 force，拋出 conflict 錯誤含診斷資訊
 // - 平台前綴補全：不含 AGY-/CC- 前綴的角色代碼自動根據 session_id 類型補全。
 // - forced=true 時強制接管：
@@ -283,7 +283,7 @@ export function registerAgent(
   agentId: string,
   role?: string,
   forced?: boolean,
-  termKey?: string   // WT_SESSION GUID（v1.1.3）；未傳入則由內部環境變數解析
+  termKey?: string   // PIC_TERM_KEY GUID（v1.1.3）；未傳入則由內部環境變數解析
 ): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }
 

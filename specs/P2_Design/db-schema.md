@@ -127,14 +127,16 @@ CREATE INDEX idx_acc_receiver_status ON agent_collaboration_channel(receiver, st
 `initDatabase()` 啟動時執行（ALTER TABLE，欄位已存在則 ignore）：
 - `tasks` 補 `type` 欄位
 - `tasks` 補 `relay_to` 欄位
-- `agents` 補 `term_key` 欄位
+- `agents` 補 `term_key` 欄位（且保證其設為 `NOT NULL`，若原本有 null 舊資料，一律自動遷移更新為當前 `PIC_TERM_KEY` 預設值）
 - `agents` 補 `session_id` 欄位
 - `agents` 補 `role` 欄位
 - `agents` 物理刪除可能存在的唯一索引 `idx_agents_session_id` (`DROP INDEX IF EXISTS idx_agents_session_id`)，並改建非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`
-- `agents` 新增 term_key 非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`（v1.1.3）
-- `agents` 補 `is_primary INTEGER NOT NULL DEFAULT 0` 欄位（v1.1.4）：主角色旗標，用於穩定決定 `▶` 位置
-- `agents` 新增 Partial Unique Index `CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_primary ON agents(session_id) WHERE is_primary = 1`（v1.1.4）：防呈同 session 出現多個主角色
+- `agents` 新增 term_key 非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`
+- `agents` 刪除 `is_primary` 欄位及 `idx_agents_session_primary` 索引（v1.1.4 廢除）
+- `agents` 擴充 `status` 的 CHECK 約束支援 `'attached'` 狀態
+- `agents` 新增視窗唯一活躍索引 `CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active'`（v1.1.4 新增）
 - entities 為空且 JSON 快照存在 → `migrateFromJson()` 自動匯入
+
 
 ## 孤兒訊息（ORPHANED）
 
