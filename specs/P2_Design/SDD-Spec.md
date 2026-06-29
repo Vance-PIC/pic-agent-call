@@ -261,17 +261,20 @@ pic-agent-call/
       UPDATE agents SET last_seen = datetime('now','localtime')
       WHERE session_id = ? AND status IN ('active', 'attached')
       ```
-   * **動態超時參數配置**：
+   * **動態超時參數配置（settings.json 可自訂參數化）**：
      * `register_agent` API 新增可選參數 `timeout`（分鐘數），寫入 DB 時自動乘以 60 換算為秒數寫入 `agents.agent_timeout_sec` 欄位以向下相容。
-     * 支援在全域或專用 `settings.json` 裡配置 `"agentTimeoutMin"`，作為未帶 API 參數時的預設值（Session 存活超時預設提升為 **1440 分鐘**，即 24 小時）。
+     * **可配置參數清單 (settings.json)**：
+       1. **`"agentTimeoutMin"`**：Session 存活超時時間，預設值為 **1440** (分鐘 / 即 24 小時)。
+       2. **`"statusLineFreshnessMin"`**：狀態列即時在線黃燈新鮮度判定閾值，預設值為 **120** (分鐘 / 即 2 小時)。
+       3. **`"historyPurgeMin"`**：歷史離線角色資料庫徹底 DELETE 清除之存活期閾值，預設值為 **10080** (分鐘 / 即 7 天)。
+       * 系統內部在讀取配置時，若 `settings.json` 內未顯式配置該屬性鍵，一律自動 fallback 採用上述官方定義之預設值。
    * **雙重超時閾值定義**：
-     * **Session Timeout (會話存活超時: 1440 分鐘)**：凡全系統中任何活躍角色的 `last_seen` 超過其 `agent_timeout_sec` 時，一律自動更新標記為 `status = 'offline'`。這是為了控制資料庫資料存活期。
-     * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 分鐘)**：此閾值不寫入 DB，僅由狀態列渲染腳本（`agent-statusline.mjs`）在讀取時，用於判定角色是否為黃燈 🟡（例如 `last_seen` 超過 120 分鐘 / 7200 秒未更新，狀態列顯示其為黃燈），不修改其 DB 存活狀態。
-   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，`getAgentStatus` 每次執行超時判定時，**必須自動執行過期刪除**：凡 `status = 'offline'` 且其最後活躍時間（`last_seen`）已超過 **10080 分鐘 (7天)** 的歷史紀錄，一律自資料庫中徹底執行 `DELETE` 清除。
+     * **Session Timeout (會話存活超時: 1440 分鐘)**：凡全系統中任何活躍角色的 `last_seen` 超過其 `agent_timeout_sec`（由 `agentTimeoutMin` 或 API 傳入值換算）時，一律自動更新標記為 `status = 'offline'`。這是為了控制資料庫資料存活期。
+     * **Statusline Freshness Threshold (狀態列即時在線新鮮度: 120 分鐘)**：此閾值不寫入 DB，僅由狀態列渲染腳本（`agent-statusline.mjs`）在讀取時，讀取配置的 `statusLineFreshnessMin`，用於判定角色是否為黃燈 🟡（例如 `last_seen` 超過該設定分鐘數未更新，狀態列顯示其為黃燈），不修改其 DB 存活狀態。
+   * **歷史離線自動清理防線**：為了避免離線註冊無限累積導致資料冗餘，`getAgentStatus` 每次執行超時判定時，**必須自動執行過期刪除**：凡 `status = 'offline'` 且其最後活躍時間（`last_seen`）已超過 `historyPurgeMin` 設定值（預設 **10080 分鐘 / 7天**）的歷史紀錄，一律自資料庫中徹底執行 `DELETE` 清除。
      ```sql
-     DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-10080 minutes')
+     DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || historyPurgeMin || ' minutes')
      ```
-
 
 8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正)**：
    * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝與引導環境設定腳本。
