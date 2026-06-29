@@ -44,14 +44,14 @@ npm install
 
 ## Configuration
 
-### Claude Code (`.mcp.json`)
+### Claude Code（User-level，推薦）
 
-在專案根目錄建立 `.mcp.json`：
+在 `~/.claude/settings.json` 的 `mcpServers` 加入（user-level 跨專案共用）：
 
 ```json
 {
   "mcpServers": {
-    "agent-call": {
+    "pic-agent-call": {
       "command": "node",
       "args": ["YOUR_PATH/pic-agent-call/bin/server.mjs"]
     }
@@ -59,7 +59,9 @@ npm install
 }
 ```
 
-將 `YOUR_PATH` 替換為你的本地絕對路徑，例如 `/Users/yourname/projects/pic-agent-call`。
+將 `YOUR_PATH` 替換為你的本地絕對路徑，例如 `C:/projects/pic-agent-call`。
+
+> 專案層級的 `.mcp.json` 可留空 `{"mcpServers":{}}` 或省略。
 
 ### Gemini CLI (`~/.gemini/config/mcp_config.json`)
 
@@ -131,7 +133,7 @@ DB 路徑解析優先序：`MEMORY_DB_PATH` env → `settings.local.json` → `c
 
 | Tool | Description |
 |------|-------------|
-| `register_agent` | 登記或更新當前 AI 視窗的身份（`agent_id` + `role`）。`session_id` 自動從環境變數讀取。換角色時自動處理孤兒訊息並通知原始發送者。 |
+| `register_agent` | 登記或更新當前 AI 視窗的身份（`agent_id` + `role`）。`session_id` 自動讀取。支援多角色（逗號分隔）、`force` 強制接管、`wt_session` 綁定 Windows Terminal、`timeout` 自訂超時秒數。`force=true` 時同 session 不在新名單的殘留角色自動軟離線（`status=offline`）。 |
 | `agent_status` | 查詢當前 AI 視窗的身份與未讀訊息數量。`session_id` 自動讀取。 |
 
 ---
