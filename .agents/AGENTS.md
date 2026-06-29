@@ -33,4 +33,6 @@
 ## 📜 SDD 規格驅動開發至高天條 (Spec-First Rule)
 - **原則**：在向任何 AI 代理人（特別是 `pic-PG`）發送程式碼修改請求前，**SA 必須先在物理規格書（L1 Requirements 或 L2 SDD-Spec/db-schema.md）中完成規格的異動與 Commit 提交**。
 - **約束**：嚴禁僅憑口頭或 Channel 訊息直接指派代碼修改。`pic-PG` 只認物理 SPEC 開工。SA 必須嚴格把關規格變更，始終維護 SDD 單一真實來源 (SSoT)。
+- **Git 破壞防禦線**：SA 進行規格修正或版本退回時，**絕對禁止執行 `git reset --hard` 或是任何波及 `src/` 或 `tests/` 範圍的毀滅性 git 操作**（以防誤殺 PG 工作區尚未 commit 的實體代碼）。若需退回，僅限使用精確的單一檔案還原（如 `git restore specs/`）。
+
 
