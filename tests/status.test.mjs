@@ -499,6 +499,62 @@ describe('getRegistrations()', () => {
   });
 });
 
+// ── §6.12.7 動態離線與生命週期防護 ──────────────────────────────────────────
+
+describe('§6.12.7 動態離線與生命週期防護', () => {
+  let db;
+
+  beforeEach(() => { db = makeDb(); });
+  afterEach(() => { try { db.close(); } catch (_) {} });
+
+  // 38a. heartbeat 不喚醒 offline 角色
+  test('38a. heartbeat 只更新 active 角色的 last_seen，不喚醒 offline 角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-hb';
+    registerAgent(db, 'sess-hb', 'CC-PG1', 'PG1');
+    // 手動將 CC-PG1 設為 offline
+    db.prepare(`UPDATE agents SET status='offline', last_seen='2000-01-01 00:00:00' WHERE agent_id='CC-PG1'`).run();
+    getAgentStatus(db, 'sess-hb', 'CC-PG1');
+    const row = db.prepare(`SELECT status, last_seen FROM agents WHERE agent_id='CC-PG1'`).get();
+    expect(row.status).toBe('offline');
+    expect(row.last_seen).toBe('2000-01-01 00:00:00');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38b. forced re-register 殘留角色軟離線
+  test('38b. forced=true 重新登記名單外的角色標為 offline', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-soft';
+    registerAgent(db, 'sess-soft', 'CC-QA2,CC-PG2,CC-QA1,CC-PG1', undefined, true);
+    const before = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
+    expect(before.length).toBe(4);
+
+    // forced re-register 只保留 QA1,PG1
+    registerAgent(db, 'sess-soft', 'CC-QA1,CC-PG1', undefined, true);
+    const after = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
+    const statusMap = Object.fromEntries(after.map(r => [r.agent_id, r.status]));
+    expect(statusMap['CC-QA1']).toBe('active');
+    expect(statusMap['CC-PG1']).toBe('active');
+    expect(statusMap['CC-QA2']).toBe('offline');
+    expect(statusMap['CC-PG2']).toBe('offline');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38c. 全域超時掃描不限 session
+  test('38c. getAgentStatus 超時掃描覆蓋所有 session 的 active 角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-a';
+    registerAgent(db, 'sess-a', 'CC-PG1', 'PG1');
+    // 另一個 session 的 agent，超時 1 秒，last_seen 設為很久以前
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, agent_timeout_sec, updated_at)
+       VALUES ('AGY-SA1','SA','sess-b','2000-01-01 00:00:00','active',1,datetime('now','localtime'))`
+    ).run();
+
+    getAgentStatus(db, 'sess-a', 'CC-PG1');
+    const agySa = db.prepare(`SELECT status FROM agents WHERE agent_id='AGY-SA1'`).get();
+    expect(agySa.status).toBe('offline');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+});
+
 // ── registerAgent() Spec 10 多角色 ───────────────────────────────────────────
 
 describe('registerAgent() Spec 10 多角色', () => {

@@ -201,6 +201,8 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
                 `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
             ).run(aid, sessionId);
 
+            // §6.12.7: 同 session 不在新名單的殘留角色軟離線（最後一個 parsed 元素處理完後統一執行）
+
             // 第一個 forced agent 成為主角色，同 session 其他 agent 降為副
             const isPrimary = registeredAgents.length === 0 ? 1 : 0;
             if (isPrimary) {
@@ -290,6 +292,16 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
         registeredAgents.push({ agent_id: aid, role: finalRole || null });
     }
 
+    // §6.12.7: forced 時，同 session 不在新名單的殘留角色軟離線
+    if (forced && parsed.length > 0) {
+        const newIds = parsed.map(p => p.agentId);
+        const placeholders = newIds.map(() => '?').join(',');
+        db.prepare(
+            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+             WHERE session_id = ? AND agent_id NOT IN (${placeholders})`
+        ).run(sessionId, ...newIds);
+    }
+
     // §6.12.5: forced 或多角色登記時，重設 primary 為 parsed[0].agentId
     // 單角色非 forced register 不改變現有 primary（允許後續單角色加入不搶位）
     if (parsed.length > 0 && (forced || parsed.length > 1)) {
@@ -318,18 +330,18 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     const regs = getRegistrations(db, sessionId);
     if (!regs || regs.length === 0) return null;
 
-    // heartbeat：更新本 session 所有角色的 last_seen，同時重設為 active（防止並存角色超時）
-    // ⚠️ 修正：不更新 updated_at，以防抹平 register_agent 決定的主角色排序。
+    // heartbeat：只更新 active 角色的 last_seen，不喚醒 offline 殘留角色
+    // ⚠️ 不更新 updated_at，防抹平 register_agent 決定的主角色排序
     db.prepare(
-        `UPDATE agents SET last_seen = datetime('now','localtime'), status = 'active' WHERE session_id = ?`
+        `UPDATE agents SET last_seen = datetime('now','localtime') WHERE session_id = ? AND status = 'active'`
     ).run(sessionId);
 
-    // 把超時的其他 agents 標為 offline
+    // 全域超時：不限 session，凡 last_seen 超過 agent_timeout_sec 的 active 角色一律離線
     db.prepare(
         `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-         WHERE session_id != ? AND status = 'active'
+         WHERE status = 'active'
            AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
-    ).run(sessionId);
+    ).run();
 
     // primaryAgentId 由外部傳入（server.mjs 讀快取），預設用第一筆
     if (!primaryAgentId) primaryAgentId = regs[0].agent_id;

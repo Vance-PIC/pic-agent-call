@@ -104,7 +104,7 @@ export function initDatabase(dbPath, jsonPath) {
         agent_id          TEXT PRIMARY KEY,
         last_seen         TEXT,
         status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','offline')),
-        agent_timeout_sec INTEGER NOT NULL DEFAULT 120,
+        agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
         term_key          TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
