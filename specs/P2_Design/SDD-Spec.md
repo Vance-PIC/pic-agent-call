@@ -226,3 +226,8 @@ pic-agent-call/
    * **其餘角色重置**：同 session 下的所有其他角色之 `is_primary` 均必須無條件被重設為 `0`。
    * **覆蓋所有註冊路徑**：此 `is_primary` 的主副角色轉移邏輯，必須在 `registerAgent` 內部的 **`resume` (一道防線)、`fence1/2` (二道防線)、以及 `INSERT/ON CONFLICT` (三道防線)** 所有分支中強制執行，確保重新登記不同的角色順序時，主角色 `▶` 標記能即時熱更新。
 
+6. **SQLite 資料庫路徑解析防分裂規格 (v1.1.4 補正)**：
+   * **問題背景**：由於對話框 MCP 伺服器長進程與背景 `agent-statusline.mjs` 刷新腳本啟動時的當前工作目錄（`process.cwd()`）不同（前者可能為家目錄，後者為專案目錄），僅依賴 `process.cwd()` 會導致兩者分別讀寫不同的 `.memory/memory-graph.db` SQLite 檔案，造成狀態列與對話框資訊分裂不同步。
+   * **防分裂解析防線**：`src/db.mjs` 中的 `resolveMemoryPaths` 函式在解析專案目錄 `.memory` 時，**必須**從當前目錄向上尋找直到發現 `.git` 或者是 `package.json` 以定位出專案根目錄，並以此根目錄下的 `.memory/memory-graph.db` 作為讀寫路徑，不得盲目依賴 `process.cwd()`，以此確保全進程 SSoT 資料庫一致。
+
+

@@ -72,3 +72,21 @@
   ```
   當 settings.json 套用此 items 設定後，狀態列即會按照以上順序渲染並顯示豐富的指標膠囊，並藉由 hot reload 即時生效。
 
+---
+
+## 5. MCP 伺服器與狀態列 DB 路徑分裂問題 (v1.1.4 補正)
+
+### 🔴 DB 分裂不同步問題與成因 (Symptom & Root Cause)
+* **現象**：在對話框中成功執行 `register_agent` 將主角色設為 SA1 且 JSON 回傳正常，但 Terminal 底部的 `agent-statusline` 卻依然頑固顯示舊的主角色（如 PM1）。
+* **成因**：
+  * 對話框的 MCP 伺服器進程啟動時 `cwd` 為家目錄 `C:\Users\P10377167`，因此 `resolveMemoryPaths` 返回並讀寫的是家目錄下的 `C:\Users\P10377167\.memory\memory-graph.db`。
+  * 背景刷新腳本 `agent-statusline.mjs` 執行時 `cwd` 為專案目錄，因此讀寫的是專案目錄下的 `.memory/memory-graph.db`。
+  * 兩個進程各自讀寫完全不同的 SQLite 資料庫，導致狀態列資訊與對話框登錄完全分裂不同步。
+
+### 🟢 解決方案 (Solution)
+* **方案**：修改 `src/db.mjs` 中的 `resolveMemoryPaths`，在解析專案目錄 `.memory` 時，應從當前目錄向上遞迴尋找 `.git` 或 `package.json` 以定位真實的專案根路徑，以此專案根路徑為基準讀寫 `.memory` 資料庫，不再盲目依賴 `process.cwd()`。
+
+### 📅 PG1 追加代辦事項
+3. 依據 `specs/P2_Design/SDD-Spec.md` §6.12 第 6 點，修改 `src/db.mjs` 中的 `resolveMemoryPaths` 函式，實施向上遞迴尋找專案根目錄防分裂機制，確保 MCP 伺服器長進程與背景 `agent-statusline.mjs` 讀寫同一個 SQLite 資料庫檔案。
+
+
