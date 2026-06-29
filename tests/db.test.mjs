@@ -62,11 +62,11 @@ describe('resolveMemoryPaths()', () => {
   });
 
   test('2. falls back to cwd/.memory when env var is not set', () => {
-    // Make sure env is clean
     delete process.env.MEMORY_DB_PATH;
 
-    // Temporarily override process.cwd to point to our tmpDir
-    // (settings.local.json does not exist there, so it goes to .memory fallback)
+    // 在 tmpDir 建 package.json，讓 _findProjectRoot 停在此處而非向上找到真正 root
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+
     const origCwd = process.cwd;
     process.cwd = () => tmpDir;
 
@@ -76,7 +76,6 @@ describe('resolveMemoryPaths()', () => {
 
       expect(result.dbPath).toBe(path.join(expectedDir, 'memory-graph.db'));
       expect(result.jsonPath).toBe(path.join(expectedDir, 'memory-graph.json'));
-      // The directory should have been created
       expect(fs.existsSync(expectedDir)).toBe(true);
     } finally {
       process.cwd = origCwd;

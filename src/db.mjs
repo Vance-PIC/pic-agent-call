@@ -8,32 +8,67 @@ export const IDENTITY = `PID:${process.pid} | USER:${process.env.USERNAME || pro
 const MAX_RETRIES = 20;
 const RETRY_BASE_MS = 5;
 
+function _findProjectRoot(startDir) {
+    let dir = startDir;
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+        if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, 'package.json'))) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return null;
+}
+
+export function readAgentSettings() {
+    const defaults = { agentTimeoutMin: 1440, statusLineFreshnessMin: 120, historyPurgeMin: 10080 };
+    const projectRoot = _findProjectRoot(process.cwd());
+    if (!projectRoot) return defaults;
+    const settingsPath = path.join(projectRoot, 'settings.local.json');
+    if (!fs.existsSync(settingsPath)) return defaults;
+    try {
+        const s = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        return {
+            agentTimeoutMin:      Number.isFinite(s.agentTimeoutMin)      ? s.agentTimeoutMin      : defaults.agentTimeoutMin,
+            statusLineFreshnessMin: Number.isFinite(s.statusLineFreshnessMin) ? s.statusLineFreshnessMin : defaults.statusLineFreshnessMin,
+            historyPurgeMin:      Number.isFinite(s.historyPurgeMin)      ? s.historyPurgeMin      : defaults.historyPurgeMin,
+        };
+    } catch (_) { return defaults; }
+}
+
 export function resolveMemoryPaths() {
     if (process.env.MEMORY_DB_PATH) {
         const dbPath = process.env.MEMORY_DB_PATH;
         return { dbPath, jsonPath: path.join(path.dirname(dbPath), 'memory-graph.json') };
     }
 
-    const settingsPath = path.join(process.cwd(), 'settings.local.json');
-    if (fs.existsSync(settingsPath)) {
+    // 向上遞迴尋找專案根目錄，防止不同 cwd 啟動時讀寫不同 DB（防分裂）
+    const projectRoot = _findProjectRoot(process.cwd());
+
+    if (projectRoot) {
+        const settingsPath = path.join(projectRoot, 'settings.local.json');
+        if (fs.existsSync(settingsPath)) {
+            try {
+                const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+                if (settings.memoryDbPath) {
+                    const dbPath = settings.memoryDbPath;
+                    return { dbPath, jsonPath: path.join(path.dirname(dbPath), 'memory-graph.json') };
+                }
+            } catch (_) {}
+        }
+
+        const projectMemoryDir = path.join(projectRoot, '.memory');
         try {
-            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-            if (settings.memoryDbPath) {
-                const dbPath = settings.memoryDbPath;
-                return { dbPath, jsonPath: path.join(path.dirname(dbPath), 'memory-graph.json') };
-            }
+            if (!fs.existsSync(projectMemoryDir)) fs.mkdirSync(projectMemoryDir, { recursive: true });
+            fs.accessSync(projectMemoryDir, fs.constants.W_OK);
+            return {
+                dbPath: path.join(projectMemoryDir, 'memory-graph.db'),
+                jsonPath: path.join(projectMemoryDir, 'memory-graph.json'),
+            };
         } catch (_) {}
     }
-
-    const projectMemoryDir = path.join(process.cwd(), '.memory');
-    try {
-        if (!fs.existsSync(projectMemoryDir)) fs.mkdirSync(projectMemoryDir, { recursive: true });
-        fs.accessSync(projectMemoryDir, fs.constants.W_OK);
-        return {
-            dbPath: path.join(projectMemoryDir, 'memory-graph.db'),
-            jsonPath: path.join(projectMemoryDir, 'memory-graph.json'),
-        };
-    } catch (_) {}
 
     const homeMemoryDir = path.join(os.homedir(), '.memory');
     if (!fs.existsSync(homeMemoryDir)) fs.mkdirSync(homeMemoryDir, { recursive: true });
@@ -103,10 +138,10 @@ export function initDatabase(dbPath, jsonPath) {
     db.exec(`CREATE TABLE IF NOT EXISTS agents (
         agent_id          TEXT PRIMARY KEY,
         last_seen         TEXT,
-        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','offline')),
+        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
         agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT,
+        term_key          TEXT NOT NULL DEFAULT '',
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )`);
@@ -132,7 +167,6 @@ export function initDatabase(dbPath, jsonPath) {
         `ALTER TABLE agents ADD COLUMN term_key TEXT`,
         `ALTER TABLE agents ADD COLUMN session_id TEXT`,
         `ALTER TABLE agents ADD COLUMN role TEXT`,
-        `ALTER TABLE agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0`,
     ]) {
         try { db.exec(sql); } catch (err) {
             if (!String(err.message).includes('duplicate column')) throw err;
@@ -141,10 +175,14 @@ export function initDatabase(dbPath, jsonPath) {
     // v1.1.0 多角色：session_id 改非唯一索引
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_id`); } catch (_) {}
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`);
-    // v1.1.3 term_key 索引：statusline 優先以 WT_SESSION 直查
+    // v1.1.3 term_key 索引：statusline 優先以 PIC_TERM_KEY 直查
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`);
-    // v1.1.5 is_primary：每個 session 最多一個主角色（partial unique index）
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_session_primary ON agents(session_id) WHERE is_primary = 1`);
+    // v1.1.4 廢除 is_primary：移除舊索引
+    try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
+    // v1.1.4 三態：NULL term_key 補空字串
+    db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);
+    // v1.1.4 唯一活躍角色索引：同 term_key 只能一個 active（空字串豁免）
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active' AND term_key != ''`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {

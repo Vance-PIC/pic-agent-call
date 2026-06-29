@@ -528,12 +528,12 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     const before = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
     expect(before.length).toBe(4);
 
-    // forced re-register 只保留 QA1,PG1
+    // forced re-register 只保留 QA1,PG1；QA1 排第一 → active，PG1 → attached
     registerAgent(db, 'sess-soft', 'CC-QA1,CC-PG1', undefined, true);
     const after = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
     const statusMap = Object.fromEntries(after.map(r => [r.agent_id, r.status]));
     expect(statusMap['CC-QA1']).toBe('active');
-    expect(statusMap['CC-PG1']).toBe('active');
+    expect(statusMap['CC-PG1']).toBe('attached');
     expect(statusMap['CC-QA2']).toBe('offline');
     expect(statusMap['CC-PG2']).toBe('offline');
     delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -660,33 +660,33 @@ describe('is_primary — 主角色標記', () => {
   let db;
   beforeEach(() => { db = makeDb(); });
 
-  test('P1. 首個正常登記的 agent 自動成為主角色', () => {
+  test('P1. 首個正常登記的 agent 自動成為主角色（status=active）', () => {
     registerAgent(db, 'sess-p1', 'CC-PG1', 'PG1');
-    const row = db.prepare('SELECT is_primary FROM agents WHERE agent_id = ?').get('CC-PG1');
-    expect(row.is_primary).toBe(1);
+    const row = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    expect(row.status).toBe('active');
   });
 
-  test('P2. 第二個正常登記的 agent 不搶主角色', () => {
+  test('P2. 第二個正常登記的 agent 不搶主角色（status=attached）', () => {
     registerAgent(db, 'sess-p2', 'CC-PG1', 'PG1');
     registerAgent(db, 'sess-p2', 'CC-QA1', 'QA1');
-    const pg1 = db.prepare('SELECT is_primary FROM agents WHERE agent_id = ?').get('CC-PG1');
-    const qa1 = db.prepare('SELECT is_primary FROM agents WHERE agent_id = ?').get('CC-QA1');
-    expect(pg1.is_primary).toBe(1);
-    expect(qa1.is_primary).toBe(0);
+    const pg1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    const qa1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-QA1');
+    expect(pg1.status).toBe('active');
+    expect(qa1.status).toBe('attached');
   });
 
-  test('P3. force 登記後，被 force 的第一個 agent 成為主角色，其他降為副', () => {
+  test('P3. force 登記後，被 force 的第一個 agent 成為主角色（active），其他降為副（attached）', () => {
     registerAgent(db, 'sess-p3', 'CC-PG1', 'PG1');
     registerAgent(db, 'sess-p3', 'CC-QA1', 'QA1');
-    // force CC-QA1 → QA1 應成為主角色
+    // force CC-QA1+CC-PG1 → QA1 排第一，應成為 active
     registerAgent(db, 'sess-p3', 'CC-QA1+CC-PG1', undefined, true);
-    const qa1 = db.prepare('SELECT is_primary FROM agents WHERE agent_id = ?').get('CC-QA1');
-    const pg1 = db.prepare('SELECT is_primary FROM agents WHERE agent_id = ?').get('CC-PG1');
-    expect(qa1.is_primary).toBe(1);
-    expect(pg1.is_primary).toBe(0);
+    const qa1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-QA1');
+    const pg1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    expect(qa1.status).toBe('active');
+    expect(pg1.status).toBe('attached');
   });
 
-  test('P4. force 後 getRegistrations 回傳順序：主角色排第一', () => {
+  test('P4. force 後 getRegistrations 回傳順序：主角色（active）排第一', () => {
     registerAgent(db, 'sess-p4', 'CC-PG1', 'PG1');
     registerAgent(db, 'sess-p4', 'CC-QA1', 'QA1');
     registerAgent(db, 'sess-p4', 'CC-QA1', undefined, true);
@@ -694,11 +694,11 @@ describe('is_primary — 主角色標記', () => {
     expect(regs[0].agent_id).toBe('CC-QA1');
   });
 
-  test('P5. 每個 session 最多一個 is_primary=1', () => {
+  test('P5. 每個 session 最多一個 active', () => {
     registerAgent(db, 'sess-p5', 'CC-PG1', 'PG1');
     registerAgent(db, 'sess-p5', 'CC-QA1', 'QA1');
     registerAgent(db, 'sess-p5', 'CC-QA1', undefined, true);
-    const count = db.prepare('SELECT COUNT(*) as c FROM agents WHERE session_id = ? AND is_primary = 1').get('sess-p5').c;
+    const count = db.prepare("SELECT COUNT(*) as c FROM agents WHERE session_id = ? AND status = 'active'").get('sess-p5').c;
     expect(count).toBe(1);
   });
 });

@@ -44,7 +44,7 @@ function main() {
         || null;
     if (!sessionId) process.exit(0);
 
-    const wtSession = process.env.WT_SESSION || null;
+    const wtSession = process.env.PIC_TERM_KEY || process.env.WT_SESSION || null;
 
     let db;
     try {
