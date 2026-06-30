@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { readJsonFile, writeJsonFile, ensureDir, toForwardSlash, toBackSlash } from './setup-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const wrapperPath = path.join(__dirname, 'msg-statusline-wrapper.mjs');
+const wrapperPath = path.join(__dirname, 'agent-statusline-wrapper.mjs');
 const wrapperCmd = `node "${toForwardSlash(wrapperPath)}"`;
 
 

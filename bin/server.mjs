@@ -19,6 +19,7 @@ import {
     registerAgent,
     getAgentStatus,
 } from '../src/status.mjs';
+import { readAgentSettings } from '../src/db.mjs';
 
 const { dbPath, jsonPath } = resolveMemoryPaths();
 let db;
@@ -223,8 +224,9 @@ server.tool('register_agent',
         role: z.string().max(50).optional().describe('角色標籤，單角色時覆蓋自動推導結果'),
         force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
         wt_session: z.string().optional().describe('呼叫端的 Windows Terminal WT_SESSION GUID（process.env.WT_SESSION）。傳入後 server 會以 wt_session[:8] 額外寫一份 cache，讓 statusline hook 能透過 WT_SESSION 找到正確的 agent 身份。'),
+        timeout: z.number().int().positive().optional().describe('agent 超時分鐘數，寫入 DB 時自動乘以 60 換算為秒數；未傳入時沿用預設值（1440 分鐘 / 24 小時）。'),
     },
-    async ({ agent_id, role, force, wt_session }) => {
+    async ({ agent_id, role, force, wt_session, timeout }) => {
         const sessionId = resolveSessionId();
 
         // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
@@ -247,6 +249,20 @@ server.tool('register_agent',
         const termKeyForDb = wt_session || null;
         const result = registerAgent(db, sessionId, agent_id, role, !!force, termKeyForDb);
         if (!result.success) return textJson(result);
+
+        // 寫入超時：timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
+        const effectiveTimeoutMin = timeout != null ? timeout : readAgentSettings().agentTimeoutMin;
+        if (result.registered_agents) {
+            const timeoutSec = effectiveTimeoutMin * 60;
+            const updateTimeout = db.prepare(
+                `UPDATE agents SET agent_timeout_sec = ? WHERE agent_id = ? AND session_id = ?`
+            );
+            for (const { agent_id: aid } of result.registered_agents) {
+                updateTimeout.run(timeoutSec, aid, sessionId);
+            }
+            result.agent_timeout_min = effectiveTimeoutMin;
+            result.agent_timeout_sec = timeoutSec;
+        }
 
         return textJson(result);
     }

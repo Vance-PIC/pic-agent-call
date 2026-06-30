@@ -69,7 +69,7 @@ export async function addObservations(db, jsonPath, observations) {
     await withRetry(() => {
         const check  = db.prepare('SELECT name FROM entities WHERE name = ?');
         const insert = db.prepare(`INSERT INTO observations (entity_name, observation, last_written_by) VALUES (?, ?, ?)`);
-        const update = db.prepare(`UPDATE entities SET version = version + 1, updated_at = datetime('now'), last_written_by = ? WHERE name = ?`);
+        const update = db.prepare(`UPDATE entities SET version = version + 1, updated_at = datetime('now','localtime'), last_written_by = ? WHERE name = ?`);
         db.exec('BEGIN IMMEDIATE');
         try {
             for (const item of observations) {

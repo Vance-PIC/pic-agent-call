@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import readline from 'node:readline';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,10 +22,19 @@ function spawnNode(args, opts) {
   });
 }
 
+const getMetadata = () => new Promise((resolve) => {
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  let resolved = false;
+  rl.on('line', (line) => { resolved = true; rl.close(); resolve(line); });
+  setTimeout(() => { if (!resolved) { rl.close(); resolve(''); } }, 50);
+});
+
+const stdinData = await getMetadata();
+
 // 從 env 直接讀取，不依賴 stdin（AGY CLI 不關閉 stdin，會導致掛起）
 const convId = process.env.ANTIGRAVITY_CONVERSATION_ID ?? '';
 const cwd = process.env.PWD ?? process.cwd();
-const bin = path.join(__dirname, 'msg-statusline.mjs');
+const bin = path.join(__dirname, 'agent-statusline.mjs');
 const quotaScript = path.join(homedir(), '.gemini', 'antigravity-cli', 'plugins', 'antigravity-cli-statusline', 'scripts', 'statusline-quota.mjs');
 const dbCandidate = cwd ? path.join(cwd, '.memory', 'memory-graph.db') : '';
 const memoryDbPath = dbCandidate && existsSync(dbCandidate) ? dbCandidate : (process.env.MEMORY_DB_PATH || '');
@@ -32,7 +42,7 @@ const memoryDbPath = dbCandidate && existsSync(dbCandidate) ? dbCandidate : (pro
 // 1 + 2 並行執行
 const [quotaOut, agentOut] = await Promise.all([
   existsSync(quotaScript)
-    ? spawnNode([quotaScript], {})
+    ? spawnNode([quotaScript], { input: stdinData })
     : Promise.resolve(''),
   spawnNode([bin], {
     cwd: cwd || undefined,

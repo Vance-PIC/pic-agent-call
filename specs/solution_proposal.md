@@ -80,7 +80,7 @@
             *   **條件二（孤兒快取）**：在資料庫 `agents` 表中，完全找不到該 `term_key` 對應的 session 紀錄（代表已被 force 覆寫接管刪除），且 mtime 已超過 5 分鐘（防止剛建立的併發時間差誤殺）。
             *   **條件三（超期離線）**：在資料庫中對應的記錄其 `status` 為 `'offline'`，且其 last_seen（或 mtime）距離當前時間已超過 24 小時。
     2.  **觸發時機**：
-        *   在 `register_agent` MCP tool 寫入新的 session 快取檔案時（即 `writeAgentSessionCache` 執行結束前），順便調用 `cleanExpiredAgentSessionCache(db, sessionDir)` 進行清理。以確保在有新 session 產生時主動維持目錄的整潔，且不會對需要極高讀取速度的 `msg-statusline.mjs` 造成額外負擔。
+        *   在 `register_agent` MCP tool 寫入新的 session 快取檔案時（即 `writeAgentSessionCache` 執行結束前），順便調用 `cleanExpiredAgentSessionCache(db, sessionDir)` 進行清理。以確保在有新 session 產生時主動維持目錄的整潔，且不會對需要極高讀取速度的 `agent-statusline.mjs` 造成額外負擔。
 
 ---
 

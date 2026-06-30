@@ -12,7 +12,7 @@
 - **Memory** — 知識圖譜（SQLite），相容官方 MCP memory server schema
 - **Channel** — 跨 AI 訊息傳遞，狀態機：UNREAD → IN_PROGRESS → READ / ORPHANED
 - **Task-Broker** — 任務派發，feature+payload 冪等建立，BEGIN IMMEDIATE 原子搶鎖
-- **Agent Identity** — `register_agent` / `agent_status`，per-session 身份管理與 statusline 顯示
+- **Agent Identity** — `register_agent` / `agent_status`，三態活躍模型（active/attached/offline），支援多角色並存、No Jitter 固定顯示順序（僅動箭頭）與 settings.json 分鐘自訂配置
 
 ---
 
@@ -44,14 +44,14 @@ npm install
 
 ## Configuration
 
-### Claude Code (`.mcp.json`)
+### Claude Code（User-level，推薦）
 
-在專案根目錄建立 `.mcp.json`：
+在 `~/.claude/settings.json` 的 `mcpServers` 加入（user-level 跨專案共用）：
 
 ```json
 {
   "mcpServers": {
-    "agent-call": {
+    "pic-agent-call": {
       "command": "node",
       "args": ["YOUR_PATH/pic-agent-call/bin/server.mjs"]
     }
@@ -59,7 +59,9 @@ npm install
 }
 ```
 
-將 `YOUR_PATH` 替換為你的本地絕對路徑，例如 `/Users/yourname/projects/pic-agent-call`。
+將 `YOUR_PATH` 替換為你的本地絕對路徑，例如 `C:/projects/pic-agent-call`。
+
+> 專案層級的 `.mcp.json` 可留空 `{"mcpServers":{}}` 或省略。
 
 ### Gemini CLI (`~/.gemini/config/mcp_config.json`)
 
@@ -79,6 +81,7 @@ npm install
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MEMORY_DB_PATH` | SQLite DB 路徑 | `.memory/memory-graph.db`（自動解析至 cwd 或 `~/.memory`）|
+| `settings.json` 配置 | 自訂配置參數 (分) | 支援 `agentTimeoutMin`(預設 1440), `statusLineFreshnessMin`(預設 120), `historyPurgeMin`(預設 10080)|
 | `AGENT_ID` | Agent 識別名稱（可選，配合 `register_agent` 使用）| — |
 
 DB 路徑解析優先序：`MEMORY_DB_PATH` env → `settings.local.json` → `cwd/.memory` → `~/.memory`
@@ -131,7 +134,7 @@ DB 路徑解析優先序：`MEMORY_DB_PATH` env → `settings.local.json` → `c
 
 | Tool | Description |
 |------|-------------|
-| `register_agent` | 登記或更新當前 AI 視窗的身份（`agent_id` + `role`）。`session_id` 自動從環境變數讀取。換角色時自動處理孤兒訊息並通知原始發送者。 |
+| `register_agent` | 登記或更新當前 AI 視窗的身份（`agent_id` + `role`）。`session_id` 自動讀取。支援多角色（逗號分隔）、`force` 強制接管、`wt_session` 綁定 Windows Terminal、`timeout` 自訂超時秒數。`force=true` 時同 session 不在新名單的殘留角色自動軟離線（`status=offline`）。 |
 | `agent_status` | 查詢當前 AI 視窗的身份與未讀訊息數量。`session_id` 自動讀取。 |
 
 ---
@@ -162,9 +165,17 @@ CLAUDE_CODE_SESSION_ID → ANTIGRAVITY_CONVERSATION_ID → AGENT_SESSION_ID → 
 🔴3·CC-SA1
 ```
 
-表示 agent `CC-SA1`，有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
+表示 active 主角色 `CC-SA1` 有 3 則未讀訊息（無未讀時為 `🟢0·CC-SA1`）。
+  
+  **狀態列三態燈號與新鮮度定義：**
+  * **主/從身份標示與 No Jitter 排序**：所有活躍角色固定以註冊創建時間 (`created_at ASC`) 排列顯示，順序不會因主從切換或更新而位移晃動；主角色（`active`）前方會標示 `▶`，該標記隨角色切換而動態跳移。
+  * **掛載角色**：附屬/掛載角色 (`attached`) 僅顯示其燈號與未讀數，禁止讀信與 Claim 操作（403 阻斷）。
+  * **🟢 綠燈**：在線且無未讀訊息。
+  * **🔴 紅燈**：在線且有未讀訊息。
+  * **🟡 黃燈**：閒置角色（超過 `statusLineFreshnessMin` 設定時間未更新心跳，預設 120 分鐘）。
+  * **自動清理**：離線角色超過 `historyPurgeMin` 分鐘（預設 7 天）將自動從 DB 清除。
 
-Claude Code 使用者可搭配 `bin/msg-statusline.mjs` 將此資訊顯示在 statusbar 中。
+Claude Code 使用者可搭配 `bin/agent-statusline.mjs` 將此資訊顯示在 statusbar 中。
 
 ### Statusline 設定指南
 
@@ -172,8 +183,8 @@ Claude Code 使用者可搭配 `bin/msg-statusline.mjs` 將此資訊顯示在 st
 - **註冊身份**：在啟用狀態列之前，當前 AI Session 必須先呼叫 `register_agent` 成功登記身份（`agent_id` + `role`）。
 - **啟用 MCP 伺服器**：MCP 伺服器 `pic-agent-call` 必須已正確載入，且在各平台的啟用列表（如 `enabledMcpjsonServers` 或設定檔）中。
 
-#### 2. bin/msg-statusline.mjs 說明
-`bin/msg-statusline.mjs` 是一個輕量級的查詢工具，它會執行以下操作：
+#### 2. bin/agent-statusline.mjs 說明
+`bin/agent-statusline.mjs` 是一個輕量級的查詢工具，它會執行以下操作：
 1. 自動解析當前 Session ID。
 2. 查詢 SQLite 大腦資料庫（`memory-graph.db`）中的 `agents` 表與 `agent_collaboration_channel` 通訊資料表。
 3. 取得當前代理人身份與未讀訊息數量，輸出格式為 `🟢0·CC-PG1`（有未讀時為 `🔴3·CC-PG1`），並以 `exit 0` 結束。

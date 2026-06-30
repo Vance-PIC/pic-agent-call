@@ -3,11 +3,6 @@ import { withRetry } from './db.mjs';
 
 const TIMEOUT_MINUTES = 30;
 
-function _now() {
-    const d = new Date();
-    const offset = d.getTimezoneOffset() * 60000;
-    return new Date(d - offset).toISOString().replace('T', ' ').slice(0, 19);
-}
 
 export function initAgentsTable(db) {
     db.exec(`CREATE TABLE IF NOT EXISTS agents (
@@ -78,18 +73,18 @@ export function claimTask(db, task_id, agent_id) {
     if (!task_id || !agent_id || typeof agent_id !== 'string' || !agent_id.trim() || agent_id.length > 100)
         return { success: false, reason: 'validation_error' };
 
-    const now = _now();
     db.exec('BEGIN IMMEDIATE');
     try {
         const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
         if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
         if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
         const changes = db.prepare(
-            `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=?, updated_at=? WHERE task_id=? AND status='pending'`
-        ).run(agent_id.trim(), now, now, task_id).changes;
+            `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='pending'`
+        ).run(agent_id.trim(), task_id).changes;
         if (changes === 0) { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: 'claimed', claimed_by: null }; }
         db.exec('COMMIT');
-        return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: now };
+        const claimed = db.prepare('SELECT claimed_at FROM tasks WHERE task_id = ?').get(task_id);
+        return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: claimed.claimed_at };
     } catch (err) {
         try { db.exec('ROLLBACK'); } catch (_) {}
         throw err;
@@ -103,16 +98,28 @@ export async function completeTask(db, task_id, result) {
     if (Buffer.byteLength(resultStr, 'utf8') > 1048576)
         return { success: false, reason: 'payload_too_large' };
 
-    const row = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task_id);
-    if (!row) return { success: false, task_id, reason: 'not_found' };
-    if (row.status !== 'claimed') return { success: false, task_id, reason: 'invalid_status', current_status: row.status };
-
-    const now = _now();
-    await withRetry(() => {
-        db.prepare(`UPDATE tasks SET status='completed', result=?, completed_at=?, updated_at=? WHERE task_id=? AND status='claimed'`)
-          .run(resultStr, now, now, task_id);
+    let completedAt = null;
+    const success = await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const row = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task_id);
+            if (!row) { db.exec('ROLLBACK'); return 'not_found'; }
+            if (row.status !== 'claimed') { db.exec('ROLLBACK'); return row.status; }
+            const changes = db.prepare(
+                `UPDATE tasks SET status='completed', result=?, completed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='claimed'`
+            ).run(resultStr, task_id).changes;
+            if (changes === 0) { db.exec('ROLLBACK'); return 'race'; }
+            db.exec('COMMIT');
+            return 'ok';
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
     });
-    return { success: true, task_id, status: 'completed', completed_at: now };
+    if (success === 'not_found') return { success: false, task_id, reason: 'not_found' };
+    if (success !== 'ok') return { success: false, task_id, reason: 'invalid_status', current_status: success };
+    completedAt = db.prepare('SELECT completed_at FROM tasks WHERE task_id = ?').get(task_id)?.completed_at;
+    return { success: true, task_id, status: 'completed', completed_at: completedAt };
 }
 
 export async function failTask(db, task_id, fail_reason) {
@@ -121,15 +128,25 @@ export async function failTask(db, task_id, fail_reason) {
     if (Buffer.byteLength(fail_reason, 'utf8') > 1000)
         return { success: false, reason: 'payload_too_large' };
 
-    const row = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task_id);
-    if (!row) return { success: false, task_id, reason: 'not_found' };
-    if (row.status !== 'claimed') return { success: false, task_id, reason: 'invalid_status', current_status: row.status };
-
-    const now = _now();
-    await withRetry(() => {
-        db.prepare(`UPDATE tasks SET status='failed', fail_reason=?, updated_at=? WHERE task_id=? AND status='claimed'`)
-          .run(fail_reason.trim(), now, task_id);
+    const failResult = await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const row = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(task_id);
+            if (!row) { db.exec('ROLLBACK'); return 'not_found'; }
+            if (row.status !== 'claimed') { db.exec('ROLLBACK'); return row.status; }
+            const changes = db.prepare(
+                `UPDATE tasks SET status='failed', fail_reason=?, updated_at=datetime('now','localtime') WHERE task_id=? AND status='claimed'`
+            ).run(fail_reason.trim(), task_id).changes;
+            if (changes === 0) { db.exec('ROLLBACK'); return 'race'; }
+            db.exec('COMMIT');
+            return 'ok';
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
     });
+    if (failResult === 'not_found') return { success: false, task_id, reason: 'not_found' };
+    if (failResult !== 'ok') return { success: false, task_id, reason: 'invalid_status', current_status: failResult };
     return { success: true, task_id, status: 'failed' };
 }
 

@@ -262,8 +262,8 @@ describe('registerAgent()', () => {
       receiver: 'CC-AGENT-A',
     });
 
-    // 新 session 強制接管 CC-AGENT-A（registerAgent 會自動補 CC- 前綴）
-    registerAgent(db, 'sess-new-owner', 'AGENT-A', 'PG', true);
+    // 新 session 強制接管 CC-AGENT-A（帶明確前綴以防測試環境無 env var 時補錯前綴）
+    registerAgent(db, 'sess-new-owner', 'CC-AGENT-A', 'PG', true);
 
     // 應有一條 SYSTEM → SENDER-X 的通知
     const notify = db.prepare(
@@ -499,6 +499,82 @@ describe('getRegistrations()', () => {
   });
 });
 
+// ── §6.12.7 動態離線與生命週期防護 ──────────────────────────────────────────
+
+describe('§6.12.7 動態離線與生命週期防護', () => {
+  let db;
+
+  beforeEach(() => { db = makeDb(); });
+  afterEach(() => { try { db.close(); } catch (_) {} });
+
+  // 38a. heartbeat 不喚醒 offline 角色
+  test('38a. heartbeat 只更新 active 角色的 last_seen，不喚醒 offline 角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-hb';
+    registerAgent(db, 'sess-hb', 'CC-PG1', 'PG1');
+    // 手動將 CC-PG1 設為 offline，last_seen 設 3 天前（不觸發 7-day 清理）
+    db.prepare(`UPDATE agents SET status='offline', last_seen=datetime('now','localtime','-3 days') WHERE agent_id='CC-PG1'`).run();
+    const beforeLastSeen = db.prepare(`SELECT last_seen FROM agents WHERE agent_id='CC-PG1'`).get().last_seen;
+    getAgentStatus(db, 'sess-hb', 'CC-PG1');
+    const row = db.prepare(`SELECT status, last_seen FROM agents WHERE agent_id='CC-PG1'`).get();
+    expect(row.status).toBe('offline');
+    expect(row.last_seen).toBe(beforeLastSeen);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38b. forced re-register 殘留角色軟離線
+  test('38b. forced=true 重新登記名單外的角色標為 offline', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-soft';
+    registerAgent(db, 'sess-soft', 'CC-QA2,CC-PG2,CC-QA1,CC-PG1', undefined, true);
+    const before = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
+    expect(before.length).toBe(4);
+
+    // forced re-register 只保留 QA1,PG1；QA1 排第一 → active，PG1 → attached
+    registerAgent(db, 'sess-soft', 'CC-QA1,CC-PG1', undefined, true);
+    const after = db.prepare(`SELECT agent_id, status FROM agents WHERE session_id='sess-soft'`).all();
+    const statusMap = Object.fromEntries(after.map(r => [r.agent_id, r.status]));
+    expect(statusMap['CC-QA1']).toBe('active');
+    expect(statusMap['CC-PG1']).toBe('attached');
+    expect(statusMap['CC-QA2']).toBe('offline');
+    expect(statusMap['CC-PG2']).toBe('offline');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38c. 全域超時掃描不限 session
+  test('38c. getAgentStatus 超時掃描覆蓋所有 session 的 active 角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-a';
+    registerAgent(db, 'sess-a', 'CC-PG1', 'PG1');
+    // 另一個 session 的 agent，超時 1 秒，last_seen 設為很久以前
+    // last_seen 設 2 秒前，timeout=1 秒 → 超時但不到 7 天（不觸發清理）
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, agent_timeout_sec, updated_at)
+       VALUES ('AGY-SA1','SA','sess-b',datetime('now','localtime','-2 seconds'),'active',1,datetime('now','localtime'))`
+    ).run();
+
+    getAgentStatus(db, 'sess-a', 'CC-PG1');
+    const agySa = db.prepare(`SELECT status FROM agents WHERE agent_id='AGY-SA1'`).get();
+    expect(agySa.status).toBe('offline');
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  // 38d. 歷史離線清理：offline 且超過 7 天的角色被刪除
+  test('38d. getAgentStatus 清理 offline 且超過 7 天的殘留角色', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'sess-clean';
+    registerAgent(db, 'sess-clean', 'CC-PG1', 'PG1');
+    // 插入一個 offline 且 8 天前最後活動的角色
+    db.prepare(
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
+       VALUES ('CC-OLD1','OLD','sess-old',datetime('now','localtime','-8 days'),'offline',datetime('now','localtime','-8 days'))`
+    ).run();
+    const before = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
+    expect(before).toBeTruthy();
+
+    getAgentStatus(db, 'sess-clean', 'CC-PG1');
+    const after = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
+    expect(after).toBeUndefined();
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+});
+
 // ── registerAgent() Spec 10 多角色 ───────────────────────────────────────────
 
 describe('registerAgent() Spec 10 多角色', () => {
@@ -576,6 +652,81 @@ describe('registerAgent() Spec 10 多角色', () => {
     expect(r1.success).toBe(true);
     expect(r1.registered_agents.map(r => r.agent_id)).toContain('CC-PJM');
     expect(r1.registered_agents.map(r => r.agent_id)).toContain('CC-PDM');
+  });
+});
+
+// ── is_primary 主角色欄位測試 ─────────────────────────────────────────────────
+describe('is_primary — 主角色標記', () => {
+  let db;
+  beforeEach(() => { db = makeDb(); });
+
+  test('P1. 首個正常登記的 agent 自動成為主角色（status=active）', () => {
+    registerAgent(db, 'sess-p1', 'CC-PG1', 'PG1');
+    const row = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    expect(row.status).toBe('active');
+  });
+
+  test('P2. 第二個正常登記的 agent 不搶主角色（status=attached）', () => {
+    registerAgent(db, 'sess-p2', 'CC-PG1', 'PG1');
+    registerAgent(db, 'sess-p2', 'CC-QA1', 'QA1');
+    const pg1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    const qa1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-QA1');
+    expect(pg1.status).toBe('active');
+    expect(qa1.status).toBe('attached');
+  });
+
+  test('P3. force 登記後，被 force 的第一個 agent 成為主角色（active），其他降為副（attached）', () => {
+    registerAgent(db, 'sess-p3', 'CC-PG1', 'PG1');
+    registerAgent(db, 'sess-p3', 'CC-QA1', 'QA1');
+    // force CC-QA1+CC-PG1 → QA1 排第一，應成為 active
+    registerAgent(db, 'sess-p3', 'CC-QA1+CC-PG1', undefined, true);
+    const qa1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-QA1');
+    const pg1 = db.prepare('SELECT status FROM agents WHERE agent_id = ?').get('CC-PG1');
+    expect(qa1.status).toBe('active');
+    expect(pg1.status).toBe('attached');
+  });
+
+  test('P4. force 後 getRegistrations 回傳順序：主角色（active）排第一', () => {
+    registerAgent(db, 'sess-p4', 'CC-PG1', 'PG1');
+    registerAgent(db, 'sess-p4', 'CC-QA1', 'QA1');
+    registerAgent(db, 'sess-p4', 'CC-QA1', undefined, true);
+    const regs = getRegistrations(db, 'sess-p4');
+    expect(regs[0].agent_id).toBe('CC-QA1');
+  });
+
+  test('P5. 每個 session 最多一個 active', () => {
+    registerAgent(db, 'sess-p5', 'CC-PG1', 'PG1');
+    registerAgent(db, 'sess-p5', 'CC-QA1', 'QA1');
+    registerAgent(db, 'sess-p5', 'CC-QA1', undefined, true);
+    const count = db.prepare("SELECT COUNT(*) as c FROM agents WHERE session_id = ? AND status = 'active'").get('sess-p5').c;
+    expect(count).toBe(1);
+  });
+});
+
+describe('forced orphan — 同視窗重啟不孤兒化', () => {
+  let db;
+  beforeEach(() => { db = initDatabase(':memory:', ''); });
+
+  test('O1. 同 term_key force register 不觸發孤兒化', () => {
+    registerAgent(db, 'sess-old', 'CC-PG1', 'PG1', false, 'wt-abc');
+    db.prepare(`INSERT INTO agent_collaboration_channel (message_id, sender, receiver, message, status)
+      VALUES ('msg-o1', 'AGY-SA1', 'CC-PG1', 'hello', 'UNREAD')`).run();
+
+    registerAgent(db, 'sess-new', 'CC-PG1', 'PG1', true, 'wt-abc');
+
+    const msg = db.prepare(`SELECT status FROM agent_collaboration_channel WHERE message_id = 'msg-o1'`).get();
+    expect(msg.status).toBe('UNREAD');
+  });
+
+  test('O2. 跨視窗 force register 觸發孤兒化', () => {
+    registerAgent(db, 'sess-old2', 'CC-PG1', 'PG1', false, 'wt-old');
+    db.prepare(`INSERT INTO agent_collaboration_channel (message_id, sender, receiver, message, status)
+      VALUES ('msg-o2', 'AGY-SA1', 'CC-PG1', 'hello', 'UNREAD')`).run();
+
+    registerAgent(db, 'sess-new2', 'CC-PG1', 'PG1', true, 'wt-new');
+
+    const msg = db.prepare(`SELECT status FROM agent_collaboration_channel WHERE message_id = 'msg-o2'`).get();
+    expect(msg.status).not.toBe('UNREAD');
   });
 });
 

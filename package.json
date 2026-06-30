@@ -1,12 +1,12 @@
 {
   "name": "@pic-ai/pic-agent-call",
-  "version": "1.1.3",
+  "version": "1.2.1",
   "description": "AI multi-agent communication MCP server — Memory, Channel, Task-Broker",
   "type": "module",
   "bin": {
     "pic-agent-call": "bin/pic-agent-call.js",
-    "msg-statusline": "bin/msg-statusline.mjs",
-    "msg-statusline-wrapper": "bin/msg-statusline-wrapper.mjs",
+    "msg-statusline": "bin/agent-statusline.mjs",
+    "agent-statusline-wrapper": "bin/agent-statusline-wrapper.mjs",
     "setup-agy-statusline": "bin/setup-agy-statusline.mjs",
     "setup-cc-statusline": "bin/setup-cc-statusline.mjs"
   },

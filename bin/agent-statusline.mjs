@@ -15,24 +15,20 @@ try {
     exitNoAgent();
 }
 
-const wtSession = process.env.WT_SESSION;
+const termKey = process.env.PIC_TERM_KEY || process.env.WT_SESSION;
 
-// 主查詢：term_key（WT_SESSION）直查，跳過 session_id 中間層
+// 主查詢：term_key（PIC_TERM_KEY / WT_SESSION）直查，跳過 session_id 中間層
 let regs = null;
 let querySessionId = null;
-let primaryAgentId = null;
 
-if (wtSession) {
+if (termKey) {
     try {
-        regs = getRegistrationsByTermKey(db, wtSession);
-        if (regs && regs.length > 0) {
-            querySessionId = regs[0].session_id;
-            primaryAgentId = regs[0].agent_id;
-        }
+        regs = getRegistrationsByTermKey(db, termKey);
+        if (regs && regs.length > 0) querySessionId = regs[0].session_id;
     } catch (_) {}
 }
 
-// fallback：term_key 查不到，改用 session_id 查（AGY 或無 WT_SESSION 環境）
+// fallback：term_key 查不到，改用 session_id 查（AGY 或無 term_key 環境）
 if (!regs || regs.length === 0) {
     const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
         : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
@@ -40,7 +36,6 @@ if (!regs || regs.length === 0) {
     querySessionId = resolveSessionId(callerType);
     try {
         regs = getRegistrations(db, querySessionId);
-        if (regs && regs.length > 0) primaryAgentId = regs[0].agent_id;
     } catch (_) {}
 }
 
@@ -48,7 +43,8 @@ if (!regs || regs.length === 0) {
     exitNoAgent();
 }
 
-const status = getAgentStatus(db, querySessionId, primaryAgentId);
+// primaryAgentId 不傳入，由 getAgentStatus 自行從 DB status='active' 判斷
+const status = getAgentStatus(db, querySessionId);
 if (!status) {
     exitNoAgent();
 }

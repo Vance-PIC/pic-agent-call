@@ -41,9 +41,9 @@ session_id 查到 agents → term_key IS NULL 且有 WT_SESSION → UPDATE agent
 
 ---
 
-### 3. `msg-statusline.mjs`（CC + AGY 自動 patch）
+### 3. `agent-statusline.mjs`（CC + AGY 自動 patch）
 
-**檔案：** `bin/msg-statusline.mjs`
+**檔案：** `bin/agent-statusline.mjs`
 
 **誰觸發：** statusline 每次刷新（CC 5s，AGY 依設定）。
 
@@ -60,7 +60,7 @@ getRegistrations(db, querySessionId) 有結果
 
 ## term_key 讀取時機
 
-### `msg-statusline.mjs` 查詢優先順序
+### `agent-statusline.mjs` 查詢優先順序
 
 ```
 1. WT_SESSION → SELECT session_id FROM agents WHERE term_key = WT_SESSION
@@ -93,14 +93,14 @@ CC terminal 啟動
     │             └─ 查不到 → warn
     │
     └─ statusline 刷新（每 5s）
-           └─ msg-statusline.mjs
+           └─ agent-statusline.mjs
                   ├─ WT_SESSION 查 term_key → 取 session_id → 查 registrations
                   ├─ fallback：CLAUDE_CODE_SESSION_ID 直查
                   └─ regs 有結果 + term_key NULL → patch WT_SESSION
 
 AGY terminal
     └─ statusline 刷新
-           └─ msg-statusline-wrapper.mjs → msg-statusline.mjs
+           └─ msg-statusline-wrapper.mjs → agent-statusline.mjs
                   ├─ ANTIGRAVITY_CONVERSATION_ID 直查（AGY 不換 session）
                   └─ regs 有結果 + term_key NULL → patch WT_SESSION
 ```
