@@ -107,6 +107,10 @@ pic-agent-call/
 
 `register_agent` MCP tool 更新 SQLite `agents` 表，並將 `PIC_TERM_KEY`（Windows Terminal session GUID）寫入 `agents.term_key` 欄位作為跨 session 識別依據。
 
+#### register_agent 參數重命名規範（v1.2.2）
+
+為了提高 API 參數命名的精確度，`register_agent` 的 `wt_session` 參數重命名為 `term_key`。其說明文字亦同步更新：傳入值應為 `$env:PIC_TERM_KEY`（不限於 `WT_SESSION`）。
+
 > **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位承擔。
 
 #### register_agent 與 agent_status 隔離優化（v1.2.2）
