@@ -1,4 +1,4 @@
-# SDD-Spec (L1) — pic-agent-call v1.1.3
+# SDD-Spec (L1) — pic-agent-call v1.2.2
 
 ## 1. 專案概述
 
@@ -7,7 +7,7 @@
 
 - **Runtime**: Node.js >= 22.0.0（`node:sqlite` 內建）
 - **Protocol**: MCP via `@modelcontextprotocol/sdk`（本地測試掛載名稱為 `pic-agent-call` 以防新舊版混淆）
-- **Tools**: 20（18 原有 + register_agent + agent_status）
+- **Tools**: 19（8 Memory + 7 Channel + 4 Tasks）
 - **Module format**: 純 ESM（`.mjs`）
 
 ---
