@@ -251,12 +251,12 @@ export function findAgentIdConflict(
 // 3. 將孤兒訊息標記為 ORPHANED
 // 回傳孤兒訊息數量
 // 內部 transaction 專用 (無獨立 transaction / withRetry)
-export function _handleOrphanedMessages(
+// @internal 僅供 registerAgent 內部 transaction 呼叫，不對外 export
+function _handleOrphanedMessages(
   db: DatabaseSync,
   oldAgentId: string,
   newAgentId: string
 ): number
-
 // 外部公開 API (自帶 withRetry 與 transaction 包裹)
 export function handleOrphanedMessages(
   db: DatabaseSync,
@@ -452,12 +452,12 @@ export function findAgentIdConflict(
 // 3. 將孤兒訊息標記為 ORPHANED
 // 回傳孤兒訊息數量
 // 內部 transaction 專用 (無獨立 transaction / withRetry)
-export function _handleOrphanedMessages(
+// @internal 僅供 registerAgent 內部 transaction 呼叫，不對外 export
+function _handleOrphanedMessages(
   db: DatabaseSync,
   oldAgentId: string,
   newAgentId: string
 ): number
-
 // 外部公開 API (自帶 withRetry 與 transaction 包裹)
 export function handleOrphanedMessages(
   db: DatabaseSync,

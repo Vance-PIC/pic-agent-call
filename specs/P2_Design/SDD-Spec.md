@@ -155,6 +155,8 @@ pic-agent-call/
 - **`channel_send` (MCP 安全防偽造)**：
   - MCP 工具層移除 `sender` 參數，改為必填的 `target` 參數。
   - 內部實作由 `target` 定位出活躍角色群，並強制提取其中狀態為 `'active'` 的主角色作為發送者 `sender`。若無主角色則拒絕發送。
+- **`listUnread` 安全卡控 (v1.2.2)**：
+  - 只要 `target` 參數無效（無法解析出任何活躍身份），不論傳入的 `receiver` 為何（即使為空），一律拋出 `403` 越權拒絕，落實預設防禦原則。
 - **`create_task`**、**`complete_task`**、**`fail_task`**：
   - 移除對 `sessionId` 的參數傳遞與隱式比對，簡化為無狀態任務申報。
 
@@ -270,10 +272,19 @@ pic-agent-call/
 4. **測試覆蓋防線規格 (I6)**：
    * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
 
+4.1 **DB 舊資料遷移與 Fallback 策略 (v1.2.2 裁定)**：
+    - 對於舊資料庫中存在 `term_key IS NULL` 的歷史記錄，統一將其 `term_key` Fallback 設置為 `'legacy-' || agent_id`，且將其狀態 `status` 標記為 `'offline'`，以防止與新 active unique index 衝突。
+4.2 **Agent ID 命名慣例約束**：
+    - 為了避免與 UUID/GUID 類型的 `term_key` 或 `session_id` 發生 flat-namespace 解析衝突，`agent_id` 明確禁止使用標準 GUID 格式。
+4.3 **createTask TOCTOU 併發防禦**：
+    - 將任務 duplicate hash 的 `SELECT` 檢查移入同一 `BEGIN IMMEDIATE` 交易中，以解決 TOCTOU (Time-of-Check to Time-of-Use) 併發 race condition。
+4.4 **High-Risk 寫入 withRetry 補全範圍**：
+    - 本次 Sprint 強制補全高風險寫入路徑的 `withRetry` 重試保護，包含：`claimMessage`、`ackMessage`、`claimTask`、`unregisterAgent`。
+
 5. **多角色三態狀態模型 (Three-State Model) 與轉移規格 (v1.1.4 補正)**：
    * **欄位結構重整**：徹底廢止原 \`is_primary\` 欄位。在 \`agents\` 表的 DDL 中將 \`status\` 限制為三態，且 **\`term_key\` 欄位明確設為 \`NOT NULL\`**（強制推動 \`PIC_TERM_KEY\` 大一統）：
      \`\`\`sql
-     term_key TEXT NOT NULL,
+      term_key TEXT NOT NULL, -- 移除 DEFAULT ''，強制所有 direct INSERT 顯式傳入
      status   TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active', 'attached', 'offline'))
      \`\`\`
    * **三態定義**：

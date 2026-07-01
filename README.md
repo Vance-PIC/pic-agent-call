@@ -1,871 +1,419 @@
-# @pic-ai/pic-agent-call
+# pic-agent-call
 
-<p align="center">
-  <strong>Persistent coordination infrastructure for AI agents.</strong>
-</p>
+> An Agent Coordination Runtime for independent AI agents.
 
-<p align="center">
-  An MCP server for shared memory, cross-agent messaging, task handoff, and agent identity across AI tools, sessions, and execution environments.
-</p>
+pic-agent-call provides a shared coordination layer for AI agents operating across different tools, terminals, sessions, and model providers.
 
-<p align="center">
-  <a href="#overview">Overview</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#mcp-tools">MCP Tools</a> ·
-  <a href="#agent-identity-and-statusline">Statusline</a> ·
-  <a href="#deployment">Deployment</a>
-</p>
+It gives agents persistent identity, shared project memory, communication channels, durable task coordination, and lifecycle awareness without forcing them into the same process, platform, or LLM ecosystem.
+
+pic-agent-call is not an agent framework and does not replace model execution. It coordinates independent agents while preserving explicit ownership, recoverability, and human governance.
 
 ---
 
-## Overview
+## Why pic-agent-call Exists
 
-AI agents are increasingly specialized. One agent may define architecture, another may implement changes, and another may review the result. The agents may run in different terminals, IDEs, CLIs, containers, or model providers.
+Modern AI agents are commonly isolated by:
 
-The challenge is no longer only model capability. It is coordination.
+- terminal or process;
+- provider or client;
+- session history;
+- account or execution environment;
+- local context that other agents cannot inspect.
 
-**pic-agent-call** provides a persistent, project-scoped coordination layer for AI agents:
+This creates recurring coordination failures:
 
-- **Memory** — durable project knowledge stored in a shared knowledge graph;
-- **Channel** — cross-agent messaging with claim and acknowledgement semantics;
-- **Task Broker** — explicit task creation, assignment, claiming, completion, and failure;
-- **Agent Identity** — stable identity, role, presence, unread state, and statusline integration.
+- agents do not know who is active;
+- responsibilities exist only in natural-language prompts;
+- task ownership becomes ambiguous;
+- project memory is fragmented across sessions;
+- context is lost after interruption;
+- humans must manually relay state between tools;
+- multiple agents may collide in the same workspace.
 
-```mermaid
-flowchart LR
-    Claude["Claude Code"]
-    Gemini["Gemini CLI"]
-    Codex["Codex"]
-    Other["Other MCP Clients"]
-
-    Claude --> PAC["pic-agent-call"]
-    Gemini --> PAC
-    Codex --> PAC
-    Other --> PAC
-
-    PAC --> Memory["Shared Memory"]
-    PAC --> Channel["Channels"]
-    PAC --> Tasks["Task Broker"]
-    PAC --> Identity["Agent Identity"]
-```
-
-pic-agent-call is a coordination service, not another AI model. It does not replace Git, CI/CD, an IDE, or human decision authority.
-
----
-
-## Why pic-agent-call?
-
-Without a shared coordination layer, multi-agent workflows often rely on copied prompts, transient chat history, local notes, or undocumented assumptions.
-
-```mermaid
-flowchart LR
-    A["Agent A"] --> H1["Manual Handoff"]
-    H1 --> A2["Agent B"]
-    A2 --> H2["Manual Handoff"]
-    H2 --> A3["Agent C"]
-
-    H1 -. context loss .-> Risk["Drift and Ambiguity"]
-    H2 -. context loss .-> Risk
-```
-
-pic-agent-call makes coordination state explicit and durable:
-
-```mermaid
-flowchart LR
-    A["Agent A"] --> PAC["pic-agent-call"]
-    PAC --> B["Agent B"]
-    B --> PAC
-    PAC --> C["Agent C"]
-
-    PAC --> State["Persistent Coordination State"]
-```
-
-This enables:
-
-- cross-session continuity;
-- explicit task ownership;
-- asynchronous communication;
-- durable project decisions;
-- role-aware handoffs;
-- traceable workflow state;
-- collaboration across different AI providers.
-
----
-
-## Core Capabilities
-
-| Capability | Purpose |
-| --- | --- |
-| Memory | Store and query durable project knowledge and observations |
-| Channel | Send, claim, acknowledge, and route cross-agent messages |
-| Task Broker | Create, assign, claim, complete, and fail coordinated work |
-| Agent Identity | Register agent roles, track presence, and expose unread state |
-| Statusline | Show active and attached roles with stable No Jitter ordering |
-
----
-
-## Architecture
+pic-agent-call introduces a durable coordination runtime between agent execution and project systems.
 
 ```mermaid
 flowchart TB
-    subgraph Clients["MCP Clients"]
-        CC["Claude Code"]
-        GM["Gemini CLI / Antigravity"]
-        CX["Codex"]
-        OA["Other Agents"]
-    end
+    H[Human Governance]
+    C[pic-agent-call<br/>Coordination Runtime]
+    A1[Agent Client A]
+    A2[Agent Client B]
+    A3[Agent Client C]
+    P[Project Systems]
+    S[(Persistent Storage)]
 
-    subgraph PAC["pic-agent-call"]
-        ID["Agent Identity"]
-        MEM["Memory"]
-        CH["Channel"]
-        TASK["Task Broker"]
-    end
-
-    DB["Persistent Coordination Database"]
-
-    CC --> PAC
-    GM --> PAC
-    CX --> PAC
-    OA --> PAC
-
-    PAC --> DB
-```
-
-The system separates three responsibilities:
-
-1. **Agent execution** remains in the model, CLI, IDE, container, or orchestration platform.
-2. **Coordination state** is managed by pic-agent-call.
-3. **Versioned project artifacts** remain in Git and other designated systems of record.
-
----
-
-## Requirements
-
-- **Node.js 22.0.0 or later**
-- An MCP-compatible client
-
-Node.js 22 or later is required because pic-agent-call uses the built-in `node:sqlite` module.
-
----
-
-## Quick Start
-
-### Option A — npm / npx
-
-Install globally or in a project:
-
-```bash
-npm install @pic-ai/pic-agent-call
-```
-
-Run without installing:
-
-```bash
-npx @pic-ai/pic-agent-call
-```
-
-### Option B — Local repository
-
-A local path is convenient when configuring multiple MCP clients against the same checkout.
-
-```bash
-git clone https://github.com/Vance-PIC/pic-agent-call.git
-cd pic-agent-call
-npm install
-```
-
-The MCP server entry point is:
-
-```text
-bin/server.mjs
+    H --> C
+    A1 <--> C
+    A2 <--> C
+    A3 <--> C
+    C <--> P
+    C <--> S
 ```
 
 ---
 
-## MCP Client Configuration
+## What It Provides
 
-### Claude Code
+### Persistent Agent Identity
 
-Add pic-agent-call to the user-level Claude Code configuration in `~/.claude/settings.json`:
+Agent identity survives individual sessions, terminal restarts, and model-provider changes.
 
-```json
-{
-  "mcpServers": {
-    "pic-agent-call": {
-      "command": "node",
-      "args": ["YOUR_PATH/pic-agent-call/bin/server.mjs"]
-    }
-  }
-}
-```
+An agent is not treated as a connection or chat session. The runtime can distinguish the stable participant from each temporary execution occurrence.
 
-Replace `YOUR_PATH` with the absolute path to the repository.
+### Agent Lifecycle and Presence
 
-Windows paths should use forward slashes when possible:
+Agents have explicit lifecycle state:
 
-```json
-{
-  "mcpServers": {
-    "pic-agent-call": {
-      "command": "node",
-      "args": ["C:/projects/pic-agent-call/bin/server.mjs"]
-    }
-  }
-}
-```
+- `active` — owns the primary execution role for a terminal context;
+- `attached` — present but not the active owner;
+- `offline` — not currently considered present.
 
-A project-level `.mcp.json` may remain empty when the server is configured globally:
+The runtime prevents ambiguous active ownership in the same terminal context.
 
-```json
-{
-  "mcpServers": {}
-}
-```
+### Communication Channels
 
-### Gemini CLI
+Agents can exchange durable, project-scoped messages through channels.
 
-Add the server to `~/.gemini/config/mcp_config.json`:
+Channels provide communication history, direct or shared coordination, correlation between calls and replies, and task-specific discussion.
 
-```json
-{
-  "mcpServers": {
-    "pic-agent-call": {
-      "command": "node",
-      "args": ["YOUR_PATH/pic-agent-call/bin/server.mjs"]
-    }
-  }
-}
-```
+### Durable Task Coordination
 
-### npx-based configuration
+Tasks are explicit coordination objects rather than responsibilities inferred from conversation.
 
-An MCP client may also launch the published package directly:
+The runtime records task state, ownership, assignment, acceptance, completion, release, and abort semantics.
 
-```json
-{
-  "mcpServers": {
-    "pic-agent-call": {
-      "command": "npx",
-      "args": ["-y", "@pic-ai/pic-agent-call"]
-    }
-  }
-}
-```
+### Shared Project Memory
 
-Use a local checkout when you need a fixed source revision or access to repository-provided scripts and skills.
+Project knowledge can survive individual model sessions.
+
+Memory is explicitly written, scoped, retrieved, and governed. It is not equivalent to raw conversation history or a provider-specific context window.
+
+### Session and Workspace Awareness
+
+The runtime distinguishes:
+
+- agent identity;
+- execution session;
+- terminal context;
+- project workspace.
+
+This separation enables recovery, controlled handoff, and workspace collision awareness.
+
+### Human Governance
+
+pic-agent-call coordinates agents without replacing human authority.
+
+Critical decisions, approvals, aborts, and conflict resolution can remain human-controlled.
 
 ---
 
-## Configuration
+## Architectural Position
 
-### Environment variables
+pic-agent-call is best understood as a **control plane for AI-agent coordination**.
 
-| Variable | Description | Default |
-| --- | --- | --- |
-| `MEMORY_DB_PATH` | Path to the SQLite coordination database | `.memory/memory-graph.db`, resolved against the current project or user home |
-| `AGENT_ID` | Optional default agent identifier used with agent registration | Not set |
-| `PIC_TERM_KEY` | Optional terminal/window coordination key used by statusline integration | Derived by the runtime when available |
+It is not:
 
-### Runtime settings
+- an LLM gateway;
+- an agent framework;
+- a general-purpose message broker;
+- a workflow engine;
+- a vector database;
+- a replacement for Git;
+- a replacement for project-management software.
 
-Runtime timing settings are expressed in minutes:
+It may integrate with those systems, but its responsibility remains narrow:
 
-| Setting | Description | Default |
-| --- | --- | --- |
-| `agentTimeoutMin` | Time before an inactive agent is treated as offline | `1440` |
-| `statusLineFreshnessMin` | Time before a statusline identity is shown as idle | `120` |
-| `historyPurgeMin` | Retention period for offline agent history | `10080` |
+> Maintain identity, presence, ownership, communication, task state, and shared coordination memory.
 
-These settings may be supplied through the project's supported settings files.
+---
 
-### Database path resolution
+## Core Architectural Principles
 
-The database path is resolved in this order:
+1. **Identity first**  
+   Every coordinated action is attributable to an agent, human, or system actor.
 
-```text
-MEMORY_DB_PATH
-    ↓
-settings.local.json
-    ↓
-<current-working-directory>/.memory
-    ↓
-~/.memory
+2. **Coordination over communication**  
+   Messages alone do not establish responsibility or ownership.
+
+3. **Persistence over context**  
+   Durable project state must not depend on a single model session.
+
+4. **Explicit ownership over inference**  
+   Responsibilities and transitions are represented as inspectable state.
+
+5. **Human governance over autonomous consensus**  
+   Agents do not silently override privileged human decisions.
+
+6. **Loose coupling**  
+   Agents may collaborate across tools, models, accounts, and processes.
+
+7. **Storage replaceability**  
+   Coordination semantics remain stable even when the persistence provider changes.
+
+8. **Recovery by design**  
+   Process loss and disconnection are expected operating conditions.
+
+---
+
+## High-Level Architecture
+
+```mermaid
+flowchart LR
+    API[Protocol Adapters]
+    APP[Coordination Services]
+    REG[Agent Registry]
+    CH[Channel Service]
+    TB[Task Broker]
+    MEM[Memory Service]
+    POL[Policy and Invariant Engine]
+    STORE[(Storage Provider)]
+
+    API --> APP
+    APP --> REG
+    APP --> CH
+    APP --> TB
+    APP --> MEM
+    REG --> POL
+    CH --> POL
+    TB --> POL
+    MEM --> POL
+    REG --> STORE
+    CH --> STORE
+    TB --> STORE
+    MEM --> STORE
 ```
+
+### Coordinator
+
+The Coordinator is the central enforcement point for coordination semantics.
+
+It validates project scope, resolves agent identity, governs lifecycle transitions, enforces active ownership, routes channel operations, manages task state, mediates memory access, and persists coordination state.
+
+### Agent Registry
+
+The Agent Registry manages:
+
+- stable identities;
+- sessions;
+- presence;
+- terminal association;
+- active ownership;
+- lifecycle history.
+
+### Channel Service
+
+The Channel Service stores and retrieves durable project communication.
+
+### Task Broker
+
+The Task Broker manages explicit responsibility, assignment, acceptance, state transition, completion, and recovery.
+
+### Memory Service
+
+The Memory Service preserves durable project knowledge beyond the lifetime of any individual model session.
+
+### Storage Provider
+
+The persistence layer stores coordination state and enforces critical invariants.
+
+SQLite is the reference persistence engine for pic-agent-call 1.x. The architecture is designed so that SQLite becomes one provider rather than a permanent architectural dependency.
+
+---
+
+## Agent Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Offline
+    Offline --> Attached : register / recover
+    Attached --> Active : acquire active ownership
+    Active --> Attached : relinquish ownership
+    Attached --> Offline : timeout / detach
+    Active --> Offline : disconnect / timeout
+```
+
+The baseline lifecycle is intentionally small:
+
+| State | Meaning |
+|---|---|
+| `active` | Primary owner of an exclusive terminal context |
+| `attached` | Present and participating without active ownership |
+| `offline` | Identity remains durable, but the agent is not currently present |
+
+Offline does not delete identity, task history, channel history, or memory.
+
+---
+
+## Coordination Model
+
+A typical coordination flow is:
+
+```mermaid
+sequenceDiagram
+    participant A as Agent A
+    participant C as Coordinator
+    participant B as Agent B
+    participant S as Storage
+
+    A->>C: Register
+    C->>S: Persist identity and session
+    C-->>A: Attached
+
+    A->>C: Acquire active ownership
+    C->>S: Atomic ownership transition
+    C-->>A: Active
+
+    A->>C: Create or post task
+    C->>S: Persist task
+    B->>C: Read available work
+    C-->>B: Task
+    B->>C: Accept task
+    C->>S: Persist ownership
+
+    B->>C: Post result
+    C->>S: Persist message
+    B->>C: Complete task
+    C->>S: Persist transition
+```
+
+Critical ownership transitions must be atomic and deterministic.
+
+---
+
+## Architecture Source of Truth
+
+The Architecture Whitepaper is the project's highest-level technical authority.
+
+- [Architecture Whitepaper — English](docs/architecture/architecture.en.md)
+- [架構白皮書 — 繁體中文](docs/architecture/architecture.zh-TW.md)
+
+The documentation hierarchy is:
 
 ```mermaid
 flowchart TD
-    ENV["MEMORY_DB_PATH"] -->|not set| LOCAL["settings.local.json"]
-    LOCAL -->|not set| CWD["cwd/.memory"]
-    CWD -->|not available| HOME["~/.memory"]
+    W[Architecture Whitepaper]
+    A[API Specification]
+    D[Database Schema]
+    E[Error Codes]
+    S[Software Design Specification]
+    I[Implementation]
+
+    W --> A
+    W --> D
+    W --> E
+    W --> S
+    A --> I
+    D --> I
+    E --> I
+    S --> I
 ```
 
-For shared or containerized deployments, set `MEMORY_DB_PATH` explicitly and mount persistent storage at that location.
+Lower-level specifications may refine the architecture but must not contradict it.
 
 ---
 
-# MCP Tools
+## Documentation
 
-pic-agent-call exposes **20 MCP tools** across four capability groups.
-
-## Memory — Custom
-
-| Tool | Description |
-| --- | --- |
-| `add-observation` | Add an observation to a named memory entity. Creates the entity when it does not exist and updates the JSON snapshot. |
-| `query-entity` | Return the complete record for an entity, including properties, relations, and observation history. |
-| `stats` | Return database statistics, including entity, relation, and observation counts and the resolved database path. |
-
-## Memory — Official-Compatible
-
-These tools follow the official MCP memory-server schema and can be used as compatible replacements in existing workflows.
-
-| Tool | Description |
-| --- | --- |
-| `create_entities` | Create multiple knowledge entities. Existing entities with the same name are ignored. |
-| `add_observations` | Add observations to existing entities. The operation fails for entities that do not exist. |
-| `create_relations` | Create directed relations between entities. Missing entities may be represented by temporary nodes. |
-| `read_graph` | Export the complete knowledge graph, including entities, observations, and relations. |
-| `search_nodes` | Search entity names, entity types, and observation content. |
-
-## Task Broker
-
-| Tool | Description |
-| --- | --- |
-| `create_task` | Create a task with idempotency protection for the same `feature` and `payload`. |
-| `list_pending_tasks` | List pending tasks and release claimed tasks that have exceeded the claim timeout. |
-| `claim_task` | Atomically claim a task so that only one agent can acquire it. |
-| `complete_task` | Complete a claimed task and persist its result. |
-| `fail_task` | Mark a claimed task as failed and record the reason. |
-| `get_task` | Return the complete record for one task. |
-
-```mermaid
-stateDiagram-v2
-    [*] --> Pending
-    Pending --> Claimed: claim_task
-    Claimed --> Completed: complete_task
-    Claimed --> Failed: fail_task
-    Claimed --> Pending: claim timeout
-    Completed --> [*]
-    Failed --> [*]
-```
-
-The default claimed-task timeout is 30 minutes.
-
-## Channel
-
-| Tool | Description |
-| --- | --- |
-| `channel_send` | Send a message to a specific agent, wildcard receiver, pool, or `all`. |
-| `channel_list_unread` | List unread messages for a receiver and release expired in-progress claims. |
-| `channel_claim` | Atomically move a message from `UNREAD` to `IN_PROGRESS`. |
-| `channel_ack` | Acknowledge a claimed message and move it to `READ`. Only the claimant may acknowledge it. |
-
-```mermaid
-stateDiagram-v2
-    [*] --> UNREAD
-    UNREAD --> IN_PROGRESS: channel_claim
-    IN_PROGRESS --> READ: channel_ack
-    IN_PROGRESS --> UNREAD: claim timeout
-    UNREAD --> ORPHANED: receiver unavailable
-    READ --> [*]
-    ORPHANED --> [*]
-```
-
-The default in-progress channel timeout is 15 minutes.
-
-## Agent Identity
-
-| Tool | Description |
-| --- | --- |
-| `register_agent` | Register or update the current agent identity and role. Supports multiple roles, forced takeover, Windows Terminal binding, and custom timeout values. |
-| `agent_status` | Return the current identity, role state, and unread-message count. |
+| Document | Purpose |
+|---|---|
+| `README.md` | Project overview and entry point |
+| `README.zh-TW.md` | Traditional Chinese project overview |
+| `docs/architecture/architecture.en.md` | Architecture Source of Truth |
+| `docs/architecture/architecture.zh-TW.md` | Traditional Chinese Architecture Whitepaper |
+| `api-spec.md` | External API contract |
+| `db-schema.md` | Persistence model and constraints |
+| `error-codes.md` | Runtime error semantics |
+| `SDD-Spec.md` | Software design and implementation contract |
 
 ---
 
-## Agent Identity Model
+## Architectural Invariants
 
-Every participating agent should register before creating or claiming coordinated work.
+A compatible implementation must preserve these invariants:
 
-Example:
-
-```json
-{
-  "agent_id": "CC-SA1",
-  "role": "SA"
-}
-```
-
-### Presence states
-
-| State | Meaning |
-| --- | --- |
-| `active` | Primary role for the terminal or execution context |
-| `attached` | Registered secondary role in the same context |
-| `offline` | Known role that is no longer active in the context |
-
-```mermaid
-flowchart TB
-    Term["Terminal / Session"]
-
-    Term --> Active["▶ active"]
-    Term --> Attached1["attached"]
-    Term --> Attached2["attached"]
-
-    Active -. timeout or replacement .-> Offline["offline"]
-    Attached1 -. timeout or removal .-> Offline
-```
-
-Only the active role may read and claim channel work. Attached roles remain visible but are blocked from read and claim operations.
-
-### Session ID resolution
-
-The current session identifier is resolved in this order:
-
-```text
-CLAUDE_CODE_SESSION_ID
-    ↓
-ANTIGRAVITY_CONVERSATION_ID
-    ↓
-AGENT_SESSION_ID
-    ↓
-hostname-pid
-```
-
-### Multiple roles
-
-`register_agent` supports comma-separated roles when one session needs several registered identities.
-
-A forced registration may transfer the active role and mark stale roles from the same session as offline.
+1. Identity is independent of connection and session.
+2. Project scope is the primary isolation boundary.
+3. At most one active agent owns an exclusive terminal context.
+4. Attached agents may participate without claiming active ownership.
+5. Offline status does not delete durable state.
+6. Tasks represent explicit ownership.
+7. Channels represent communication, not ownership.
+8. Memory represents durable project knowledge, not raw model context.
+9. Critical state transitions are persisted before success is acknowledged.
+10. Human-governed decisions cannot be silently overridden.
+11. Storage technology may change; coordination semantics may not.
 
 ---
 
-## Recommended Session Protocol
+## Version Direction
 
-A practical startup sequence is:
+### pic-agent-call 1.x
 
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant PAC as pic-agent-call
+The 1.x architecture prioritizes:
 
-    Agent->>PAC: agent_status
-    alt Identity is missing
-        Agent->>PAC: register_agent
-    end
-    Agent->>PAC: channel_list_unread
-    PAC-->>Agent: Current identity and pending messages
-```
+- local operability;
+- correctness;
+- low deployment complexity;
+- a single Coordinator;
+- SQLite-backed persistence;
+- clear coordination semantics.
 
-Before performing coordinated write actions:
+### pic-agent-call 2.x Direction
 
-1. call `agent_status`;
-2. check the unread-message count;
-3. process or acknowledge pending coordination messages;
-4. continue only when the active identity and ownership are clear.
+The planned architectural direction is:
 
-This prevents an agent from acting on stale context while a newer instruction is waiting.
+> **Decouple coordination from storage.**
 
----
-
-# Agent Identity and Statusline
-
-The statusline exposes the current agent identities and unread-message state directly in the terminal UI.
-
-A single-role display may look like:
-
-```text
-▶🟢0·CC-SA1
-```
-
-A role with unread messages may look like:
-
-```text
-▶🔴3·CC-SA1
-```
-
-### Status indicators
-
-| Indicator | Meaning |
-| --- | --- |
-| `▶` | Current active role |
-| `🟢` | Online with no unread messages |
-| `🔴` | Online with unread messages |
-| `🟡` | Idle beyond `statusLineFreshnessMin` |
-| No arrow | Attached role |
-
----
-
-## No Jitter Ordering
-
-Statusline roles are ordered by their original registration time:
-
-```text
-created_at ASC
-```
-
-The order remains stable when the active role changes. Only the `▶` marker moves.
+SQLite will remain a supported provider while the Coordinator evolves toward a storage-provider boundary.
 
 ```mermaid
 flowchart LR
-    Before["▶ SA  ·  PG  ·  QA"]
-    After["SA  ·  ▶ PG  ·  QA"]
+    V1[1.x<br/>Coordinator + SQLite]
+    V2[2.x<br/>Storage Provider Interface]
+    P1[(SQLite)]
+    P2[(PostgreSQL)]
+    P3[(Other Providers)]
 
-    Before -->|"active role changes"| After
+    V1 --> V2
+    V2 --> P1
+    V2 -.-> P2
+    V2 -.-> P3
 ```
 
-This prevents the statusline from visually reordering or "jittering" whenever the primary role changes.
-
-Attached roles remain visible in the same position but cannot read or claim messages.
+This evolution must not change the meaning of identity, lifecycle, task ownership, channels, memory, or project isolation.
 
 ---
 
-## Statusline Script
+## Project Status
 
-The repository includes:
+pic-agent-call is under active development.
 
-```text
-bin/agent-statusline.mjs
-```
+The architecture is being stabilized around the 1.x coordination model before broader storage abstraction and distributed deployment are introduced.
 
-The script:
-
-1. resolves the current session ID;
-2. reads the current agent identity;
-3. reads unread channel state;
-4. applies active, attached, idle, and unread indicators;
-5. outputs a compact status segment;
-6. exits successfully without interrupting the parent statusline.
-
-The database path follows the same resolution rules as the MCP server.
+Use the specifications in this repository as the authoritative contract for implemented behavior. Where an implementation and specification differ, the discrepancy should be treated as a defect or an unresolved specification change.
 
 ---
 
-## Claude Code Statusline Setup
-
-### Prerequisites
-
-Before enabling the statusline:
-
-- pic-agent-call must be configured and loaded as an MCP server;
-- the current session must have successfully called `register_agent`;
-- the statusline command must be able to resolve the same database path as the MCP server.
-
-### Configuration
-
-Add a `statusLine` command to `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": "bash bin/statusline.sh seg_brain"
-}
-```
-
-When Claude Code starts from another directory, use an absolute path.
-
-Example for Windows:
-
-```json
-{
-  "statusLine": "bash \"C:/projects/pic-agent-call/bin/statusline.sh\" seg_brain"
-}
-```
-
-### Important settings warning
-
-Claude Code may silently ignore an entire settings file when `.claude/settings.local.json` contains malformed JSON or invalid `Bash(...)` permission rules.
-
-When the statusline does not appear:
-
-1. validate `settings.json`;
-2. validate `settings.local.json`;
-3. check quoting and backslashes in Windows paths;
-4. confirm that the MCP server is enabled;
-5. confirm that `register_agent` has already succeeded;
-6. confirm that the statusline and server resolve the same database.
-
----
-
-## Antigravity / Gemini Statusline Setup
-
-Antigravity can invoke a command-based statusline through its settings.
-
-Configure either:
-
-```text
-~/.gemini/settings.json
-```
-
-or the higher-priority CLI-specific file:
-
-```text
-~/.gemini/antigravity-cli/settings.json
-```
-
-Example:
-
-```json
-{
-  "statusLine": {
-    "enabled": true,
-    "type": "command",
-    "command": "node C:\\Users\\<your_username>\\.gemini\\hooks\\statusline-quota.mjs"
-  }
-}
-```
-
-A custom hook may call the repository's message-statusline helper and combine the result with quota or model information.
-
-Add the hook script to:
-
-```text
-~/.gemini/trusted_hooks.json
-```
-
-before enabling it.
-
----
-
-## setup-statusline Skill
-
-The repository includes a Claude Code skill for guided installation:
-
-```text
-skills/setup-statusline.md
-```
-
-Install it with:
-
-```bash
-cp skills/setup-statusline.md ~/.claude/skills/setup-statusline.md
-```
-
-Then run:
-
-```text
-/setup-statusline
-```
-
-The skill guides the user through:
-
-- prerequisite validation;
-- `settings.json` configuration;
-- terminal-key verification;
-- output testing;
-- malformed-settings troubleshooting;
-- statusline recovery guidance.
-
----
-
-# Multi-Agent Workflow Example
-
-The following example assigns an implementation task to another agent.
-
-```mermaid
-sequenceDiagram
-    participant SA
-    participant PAC as pic-agent-call
-    participant PG
-
-    SA->>PAC: create_task
-    PG->>PAC: list_pending_tasks
-    PG->>PAC: claim_task
-    PG->>PAC: complete_task
-    PAC-->>SA: Result available
-```
-
-### Step 1 — Create a task
-
-```text
-create_task(
-  feature="auth-feature",
-  assign_to="CC-PG1",
-  payload='{"action":"implement login endpoint"}'
-)
-```
-
-### Step 2 — Discover and claim the task
-
-```text
-list_pending_tasks(assign_to="CC-PG1")
-
-claim_task(
-  task_id="...",
-  agent_id="CC-PG1"
-)
-```
-
-### Step 3 — Complete the task
-
-```text
-complete_task(
-  task_id="...",
-  result='{"status":"done","pr":"#42"}'
-)
-```
-
-A complete cross-platform relay example is available in:
-
-```text
-skills/agent-call.md
-```
-
----
-
-## Source-of-Truth Boundaries
-
-pic-agent-call coordinates work but does not replace the authoritative systems for project artifacts.
-
-| Information | Source of truth |
-| --- | --- |
-| Source code | Git |
-| Versioned specifications | Git |
-| Build and test results | CI/CD |
-| Product and approval decisions | Authorized human owner |
-| Agent identity and presence | pic-agent-call |
-| Cross-agent messages | pic-agent-call |
-| Task ownership and handoff | pic-agent-call |
-| Shared coordination memory | pic-agent-call |
-
-```mermaid
-flowchart TB
-    Human["Human Authority"]
-    Git["Git"]
-    CI["CI/CD"]
-    PAC["pic-agent-call"]
-
-    Human --> Decisions["Approval and Intent"]
-    Git --> Artifacts["Versioned Artifacts"]
-    CI --> Evidence["Build and Test Evidence"]
-    PAC --> Coordination["Identity, Messages, Tasks, Memory"]
-```
-
----
-
-# Deployment
-
-pic-agent-call can be used as a local MCP process or as shared coordination infrastructure.
-
-```mermaid
-flowchart LR
-    Local["Local Process"]
-    NPM["npx / npm"]
-    Container["Container"]
-    Team["Shared Team Service"]
-    K8s["Kubernetes"]
-
-    Local --> NPM
-    NPM --> Container
-    Container --> Team
-    Team --> K8s
-```
-
-## Local Process
-
-Use a local process when:
-
-- one user controls all participating clients;
-- the database is stored on the local machine;
-- the clients share access to the same filesystem path.
-
-Set `MEMORY_DB_PATH` when the clients may start from different working directories.
-
-## Container Deployment
-
-A containerized deployment should provide:
-
-- Node.js 22 or later;
-- the pic-agent-call package or repository;
-- a persistent volume for the coordination database;
-- an explicit `MEMORY_DB_PATH`;
-- private network access;
-- structured logs;
-- graceful shutdown.
-
-```mermaid
-flowchart TB
-    Clients["Trusted MCP Clients"]
-    Service["pic-agent-call Process"]
-    Volume["Persistent Volume"]
-    Config["Environment / Settings"]
-
-    Clients --> Service
-    Config --> Service
-    Service --> Volume
-```
-
-Do not store the SQLite database only in the container's writable layer.
-
-## Kubernetes Deployment
-
-A Kubernetes deployment should preserve the coordination database independently of Pod lifecycle.
-
-```mermaid
-flowchart TB
-    Clients["MCP Clients"]
-    Service["Kubernetes Service"]
-    Pod["pic-agent-call Pod"]
-    PVC["PersistentVolumeClaim"]
-    Config["ConfigMap / Secret"]
-    Policy["NetworkPolicy"]
-
-    Clients --> Service
-    Service --> Pod
-    Config --> Pod
-    Policy --> Service
-    Pod --> PVC
-```
-
-Operational recommendations:
-
-- use persistent storage;
-- set `MEMORY_DB_PATH` explicitly;
-- keep the service private by default;
-- separate sensitive configuration from project memory;
-- define liveness and readiness behavior;
-- back up and restore the coordination database;
-- use controlled upgrades and rollbacks;
-- verify concurrency guarantees before increasing replica count.
-
-A container or Pod being replaceable does not make the coordination store stateless.
-
----
-
-## Security
-
-The coordination database may contain project decisions, task ownership, agent identities, and review context.
-
-Recommended controls:
-
-- allow access only from trusted MCP clients;
-- use private networking where possible;
-- protect database files and backups;
-- avoid storing credentials or secrets as memory observations;
-- apply least-privilege filesystem permissions;
-- define retention and backup policies;
-- review logs before sharing them externally.
-
----
-
-## Development
-
-Run the test suite with:
-
-```bash
-npm test
-```
-
-The repository includes unit tests and P5 functional acceptance tests. Generated evidence is written to the `evidence/` directory.
-
----
-
-## Project
-
-- **GitHub:** https://github.com/Vance-PIC/pic-agent-call
-- **npm:** https://www.npmjs.com/package/@pic-ai/pic-agent-call
+## Contributing
+
+Contributions should preserve the architectural boundaries defined by the Whitepaper.
+
+Before proposing a change, verify that it does not:
+
+- bind identity to a temporary session;
+- introduce multiple active owners in one terminal context;
+- make task ownership implicit;
+- use model context as the only durable state;
+- bypass project isolation;
+- acknowledge unpersisted state changes;
+- embed storage-specific behavior into domain semantics;
+- remove human authority from privileged decisions;
+- introduce non-deterministic conflict handling.
+
+Architecture-affecting changes should include clear rationale, compatibility impact, and migration considerations.
 
 ---
 
 ## License
 
-MIT
+See the repository license file for licensing terms.
