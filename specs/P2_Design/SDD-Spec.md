@@ -120,7 +120,7 @@ pic-agent-call/
 1. **清理條件卡控 (`register_agent`)**：
    在 `registerAgent` 內部的 forced 清理邏輯中，`UPDATE agents SET status = 'offline' ...` 語法必須同時過濾 `session_id` 與 `term_key`（即僅清理當前 Terminal 視窗下的舊角色），防止將相同 `session_id` 但不同 `term_key` 的其他視窗角色踢下線。
 2. **精確路由支援 (`agent_status`)**：
-   `agent_status` MCP 工具增加可選參數 `wt_session`。若傳入該參數，MCP 伺服器將優先使用 `getRegistrationsByTermKey` 尋找 DB 中對應的 `session_id`，以解決多視窗下 Session ID 被誤判碰撞的問題。
+   `agent_status` MCP 工具增加可選參數 `term_key`。若傳入該參數，MCP 伺服器將優先使用 `getRegistrationsByTermKey` 尋找 DB 中對應的 `session_id`，以解決多視窗下 Session ID 被誤判碰撞的問題。
 
 ---
 
