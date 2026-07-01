@@ -166,8 +166,8 @@ export function createTask(
 // 列出 pending 任務（自動釋放 claimed > 30 分鐘）
 export function listPendingTasks(
   db: DatabaseSync,
-  assign_to?: string
-): { tasks: Task[], count: number }
+  assignTo?: string
+): Promise<Array<any>>
 
 // 原子領取任務（BEGIN IMMEDIATE）
 export function claimTask(
@@ -367,8 +367,8 @@ export function createTask(
 // 列出 pending 任務（自動釋放 claimed > 30 分鐘）
 export function listPendingTasks(
   db: DatabaseSync,
-  assign_to?: string
-): { tasks: Task[], count: number }
+  assignTo?: string
+): Promise<Array<any>>
 
 // 原子領取任務（BEGIN IMMEDIATE）
 export function claimTask(

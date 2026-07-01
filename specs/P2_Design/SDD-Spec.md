@@ -153,6 +153,7 @@ pic-agent-call/
   - 內部實作將**不再呼叫 `resolveSessionId()`**。
   - 安全驗證直接以傳入的 `agent_id` 去資料庫直查其 `status` 是否為 `'active'` 或 `'attached'`，只要該角色為活躍狀態即通過驗證放行。
 - **`channel_send` (MCP 安全防偽造)**：
+  - 移除了 `bin/server.mjs` 中的 `findAgentIdConflict` 預檢，將所有衝突判定收束至 `registerAgent` 內部交易中以保證原子性。
   - MCP 工具層移除 `sender` 參數，改為必填的 `target` 參數。
   - 內部實作由 `target` 定位出活躍角色群，並強制提取其中狀態為 `'active'` 的主角色作為發送者 `sender`。若無主角色則拒絕發送。
 - **`listUnread` 安全卡控 (v1.2.2)**：
@@ -272,14 +273,17 @@ pic-agent-call/
 4. **測試覆蓋防線規格 (I6)**：
    * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
 
-4.1 **DB 舊資料遷移與 Fallback 策略 (v1.2.2 裁定)**：
-    - 對於舊資料庫中存在 `term_key IS NULL` 的歷史記錄，統一將其 `term_key` Fallback 設置為 `'legacy-' || agent_id`，且將其狀態 `status` 標記為 `'offline'`，以防止與新 active unique index 衝突。
-4.2 **Agent ID 命名慣例約束**：
-    - 為了避免與 UUID/GUID 類型的 `term_key` 或 `session_id` 發生 flat-namespace 解析衝突，`agent_id` 明確禁止使用標準 GUID 格式。
+4.1 **DB 舊資料遷移與重建表策略 (v1.2.2 裁定)**：
+    - 對於舊資料庫中存在 `term_key IS NULL` 的歷史記錄，統一將其 `term_key` Fallback 設置為 `'legacy-' || agent_id`，且將其狀態 `status` 標記為 `'offline'`。
+    - 為了在舊 DB 物理達成 `term_key TEXT NOT NULL` 約束，migration 必須採用臨時表重建 `agents` 表之方式（複製、清洗、重建索引），而非僅執行簡單的 `ALTER TABLE ADD COLUMN`。
+4.2 **Agent ID 命名慣例約束與 Regex 校驗**：
+    - 為了避免與 GUID 類型的 `term_key` / `session_id` 衝突，`agent_id` 明確禁止使用標準 GUID 格式。
+    - 在 `registerAgent` 與 `_parseAgentIds` 開頭必須加入 GUID 正規表達式比對，若符合則返回 `{ success: false, reason: 'invalid_agent_id_format' }` 拒絕註冊。
 4.3 **createTask TOCTOU 併發防禦**：
     - 將任務 duplicate hash 的 `SELECT` 檢查移入同一 `BEGIN IMMEDIATE` 交易中，以解決 TOCTOU (Time-of-Check to Time-of-Use) 併發 race condition。
 4.4 **High-Risk 寫入 withRetry 補全範圍**：
-    - 本次 Sprint 強制補全高風險寫入路徑的 `withRetry` 重試保護，包含：`claimMessage`、`ackMessage`、`claimTask`、`unregisterAgent`。
+    - 本次 Sprint 強制補全高風險寫入路徑的 `withRetry` 重試保護，包含：`claimMessage`、`ackMessage`、`claimTask`、`unregisterAgent`，以及 `listPendingTasks` 內部的超時釋放 `UPDATE`。
+    - 心跳背景更新（`getAgentStatus`）為了避免阻塞狀態列極速刷新，作為低風險技術債豁免，不加 `withRetry`。
 
 5. **多角色三態狀態模型 (Three-State Model) 與轉移規格 (v1.1.4 補正)**：
    * **欄位結構重整**：徹底廢止原 \`is_primary\` 欄位。在 \`agents\` 表的 DDL 中將 \`status\` 限制為三態，且 **\`term_key\` 欄位明確設為 \`NOT NULL\`**（強制推動 \`PIC_TERM_KEY\` 大一統）：
