@@ -23,9 +23,7 @@
 ### 2.2 大一統多態查詢工具 (`agent_status`)
 - **功能**：查詢當前視窗、會話或特定角色的活躍狀態與未讀數。
 - **輸入參數**：
-  - `target` (string, **Optional**): 定位識別碼。不傳時預設為當前 `session_id`。
-- **多態查詢規則**：
-  - 依照「`agent_id` ➔ `term_key` ➔ `session_id`」的優先序進行資料庫定位，以支援狀態列或 AI 執行精確的隔離查詢。
+  - `target` (string, **Required**): 定位識別碼。移除所有背景自動推導與 fallback 掃描邏輯，強制呼叫端必須明確指定查詢目標。
 
 ### 2.3 優化註冊工具 (`register_agent`)
 - **參數調整**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)，強制呼叫端在註冊時必須傳入其視窗 UUID。
