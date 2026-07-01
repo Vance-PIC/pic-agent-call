@@ -178,6 +178,8 @@ export function initDatabase(dbPath, jsonPath) {
     // v1.1.3 term_key 索引：statusline 優先以 PIC_TERM_KEY 直查
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`);
     // v1.1.4 廢除 is_primary：移除舊索引
+    // 注意：is_primary 欄位本身未物理移除（SQLite DROP COLUMN 有前提限制）
+    // 欄位已廢棄不使用，DB 邏輯以 status='active'/'attached' 為準
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
     // v1.1.4 三態：NULL term_key 補空字串
     db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);

@@ -17,6 +17,7 @@ import {
     getRegistrations,
     findAgentIdConflict,
     registerAgent,
+    unregisterAgent,
     getAgentStatus,
 } from '../src/status.mjs';
 import { readAgentSettings } from '../src/db.mjs';
@@ -181,26 +182,26 @@ server.tool('channel_send',
     { sender: z.string(), receiver: z.string(), message: z.string(),
       priority: z.number().min(1).max(10).optional() },
     async (args) => {
-        const sessionId = resolveSessionId();
-        return textJson(await channel.sendMessage(db, args.receiver, args.message, args.sender, sessionId, args.priority));
+        return textJson(await channel.sendMessage(db, args.receiver, args.message, args.sender, args.priority));
     }
 );
 
 server.tool('channel_list_unread',
     '【channel】列出指定接收者的未讀訊息。自動釋放逾時 IN_PROGRESS（>15 分鐘）。',
-    { receiver: z.string().optional() },
+    {
+        receiver: z.string().optional(),
+        target: z.string().describe('查詢定位標的：agent_id、$env:PIC_TERM_KEY 或 session_id。用於多態解析活躍角色並進行 403 越權防禦。'),
+    },
     async (args) => {
-        const sessionId = resolveSessionId();
-        return textJson(channel.listUnread(db, args.receiver || null, sessionId));
+        return textJson(channel.listUnread(db, args.receiver || null, args.target));
     }
 );
 
 server.tool('channel_claim',
-    '【channel】原子搶鎖：將 UNREAD 訊息標記為 IN_PROGRESS。',
+    '【channel】原子搶鎖：將 UNREAD 訊息標記為 IN_PROGRESS。只有搶鎖者才能 ACK。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const sessionId = resolveSessionId();
-        const r = channel.claimMessage(db, args.message_id, args.agent_id, sessionId);
+        const r = channel.claimMessage(db, args.message_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -209,8 +210,7 @@ server.tool('channel_ack',
     '【channel】確認完成：將 IN_PROGRESS 訊息標記為 READ。只有搶鎖者才能 ACK。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const sessionId = resolveSessionId();
-        const r = channel.ackMessage(db, args.message_id, args.agent_id, sessionId);
+        const r = channel.ackMessage(db, args.message_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -223,10 +223,10 @@ server.tool('register_agent',
         agent_id: z.string().min(1).max(200).describe('代理人識別碼，支援多角色（逗號/頓號分隔），例如 CC-PG1 或 PJM、PDM、SA'),
         role: z.string().max(50).optional().describe('角色標籤，單角色時覆蓋自動推導結果'),
         force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
-        wt_session: z.string().optional().describe('呼叫端的 Windows Terminal WT_SESSION GUID（process.env.WT_SESSION）。傳入後 server 會以 wt_session[:8] 額外寫一份 cache，讓 statusline hook 能透過 WT_SESSION 找到正確的 agent 身份。'),
+        target: z.string().describe('當前終端機識別鍵，傳入 $env:PIC_TERM_KEY（Windows Terminal WT_SESSION）。statusline 依此識別所屬視窗。換角色時自動處理孤兒訊息並通知原始發送者。'),
         timeout: z.number().int().positive().optional().describe('agent 超時分鐘數，寫入 DB 時自動乘以 60 換算為秒數；未傳入時沿用預設值（1440 分鐘 / 24 小時）。'),
     },
-    async ({ agent_id, role, force, wt_session, timeout }) => {
+    async ({ agent_id, role, force, target, timeout }) => {
         const sessionId = resolveSessionId();
 
         // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
@@ -245,9 +245,7 @@ server.tool('register_agent',
             }
         }
 
-        // wt_session 有值時直接用作 term_key 寫進 DB（WT_SESSION 跨 CC 重啟不變）
-        const termKeyForDb = wt_session || null;
-        const result = registerAgent(db, sessionId, agent_id, role, !!force, termKeyForDb);
+        const result = registerAgent(db, sessionId, agent_id, role, !!force, target || '');
         if (!result.success) return textJson(result);
 
         // 寫入超時：timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
@@ -268,27 +266,25 @@ server.tool('register_agent',
     }
 );
 
+server.tool('unregister_agent',
+    '【agent】主動註銷 AI 視窗的身份。target 可為 agent_id、term_key 或 session_id（多態定位）。',
+    {
+        target: z.string().describe('註銷定位標的：agent_id（支援逗號多角色）、$env:PIC_TERM_KEY（視窗 UUID）或 session_id'),
+    },
+    async ({ target }) => {
+        const result = unregisterAgent(db, target);
+        return textJson(result);
+    }
+);
+
 server.tool('agent_status',
     '【agent】查詢當前 AI 視窗的身份與未讀訊息數量。session_id 自動讀取。',
-    {},
-    async () => {
-        const sessionId = resolveSessionId();
-        const regs = getRegistrations(db, sessionId);
-
-        if (!regs || regs.length === 0) {
-            return textJson({
-                registered: false,
-                session_id: sessionId,
-                message: '尚未登記身份，請呼叫 register_agent',
-            });
-        }
-
-        const status = getAgentStatus(db, sessionId, null);
-        return textJson({
-            registered: true,
-            ...status,
-            session_id: sessionId,
-        });
+    {
+        target: z.string().describe('查詢定位標的：agent_id、$env:PIC_TERM_KEY（視窗 UUID）或 session_id。優先序：agent_id ➔ term_key ➔ session_id。'),
+    },
+    async ({ target }) => {
+        const status = getAgentStatus(db, target);
+        return textJson(status ?? { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' });
     }
 );
 

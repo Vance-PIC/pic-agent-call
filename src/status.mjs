@@ -128,7 +128,7 @@ export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
     // 蒐集 sender 集合，每個 sender 只通知一次
     const notifiedSenders = new Set();
 
-    db.exec('BEGIN IMMEDIATE');
+    // 注意：此函式由 registerAgent 的外層 transaction 包覆，不可再起 nested transaction
     try {
         for (const row of orphans) {
             if (!notifiedSenders.has(row.sender)) {
@@ -144,9 +144,7 @@ export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
             }
             markOrphaned.run(row.message_id);
         }
-        db.exec('COMMIT');
     } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
         throw err;
     }
 
@@ -186,6 +184,10 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, targ
     const registeredAgents = [];
 
     const resolvedTermKey = target || '';
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+
     // 視窗轉移：同 term_key 下舊 session 整批設為 offline
     if (resolvedTermKey) {
         db.prepare(
@@ -193,7 +195,8 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, targ
              WHERE term_key = ? AND session_id != ?`
         ).run(resolvedTermKey, sessionId);
     }
-    // forced 模式才釋放 active 鎖，讓新名單第一個搶 active；非 forced 靠 hasActiveInSession 防重複
+    // forced 時先釋放當前 session 的 active 鎖，讓新名單第一個重新搶 active
+    // 非 forced 由 hasActiveInSession 控制，避免誤降其他角色
     if (forced) {
         db.prepare(
             `UPDATE agents SET status = 'attached', updated_at = datetime('now','localtime')
@@ -276,6 +279,7 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, targ
         // 三道防線：兩者均不命中 → INSERT；若有衝突（其他 session 占用），拋出衝突錯誤
         const conflict = findAgentIdConflict(db, aid, sessionId);
         if (conflict) {
+            db.exec('ROLLBACK');
             return {
                 success: false,
                 reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
@@ -314,6 +318,13 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, targ
                  WHERE session_id = ? AND (term_key IS NULL OR term_key = '') AND agent_id NOT IN (${placeholders})`
             ).run(sessionId, ...newIds);
         }
+    }
+
+    db.exec('COMMIT');
+
+    } catch (err) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        throw err;
     }
 
     const result = {

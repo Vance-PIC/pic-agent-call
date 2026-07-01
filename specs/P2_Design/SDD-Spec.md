@@ -270,10 +270,8 @@ pic-agent-call/
      status   TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active', 'attached', 'offline'))
      \`\`\`
    * **三態定義**：
-     * **\`active\`**：主角色 (Primary)。同一 \`term_key\` 物理視窗在同時間僅能有一個 \`active\` 角色，獨佔對話框讀信與 Claim/Ack 特權。
-     * **\`attached\`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
-     * **`active`**：主角色 (Primary)。同一 `term_key` 物理視窗在同時間僅能有一個 `active` 角色，獨佔對話框讀信與 Claim/Ack 特權。
-     * **`attached`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
+      * **`active`**：主角色 (Primary)。同一 `term_key` 物理視窗在同時間僅能有一個 `active` 角色，獨佔對話框 `▶` 指針顯示。
+      * **`attached`**：掛載角色 (Attached)。可多個共存於同視窗下，允許正常讀取未讀訊息數、詳細讀信與 Claim/Ack 訊息操作。
      * **`offline`**：離線/超時角色。不顯示於狀態列中。
    * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色：
      ```sql

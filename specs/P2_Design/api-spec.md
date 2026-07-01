@@ -502,7 +502,7 @@ export function getAgentStatus(
   role?: string,
   unread: number,
   display: string,
-  registered_agents: Array<{ agent_id: string, role: string, unread: number }>,
+  registered_agents: Array<{ agent_id: string, role: string, unread: number, freshness: 'fresh' | 'stale' }>,
   session_id?: string
 } | null
 

@@ -1,22 +1,45 @@
 import { randomUUID } from 'node:crypto';
 import { withRetry } from './db.mjs';
-import { getRegistrations, getRegistrationsByTermKey, resolveSessionId } from './status.mjs';
+import { getRegistrations, getRegistrationsByTermKey } from './status.mjs';
 
-// v1.1.0 sendMessage
+// 內部：直查 DB 確認 agent_id 是否活躍（去 session 化，v1.2.2）
+function _isActiveAgent(db, agentId) {
+    const row = db.prepare(
+        `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`
+    ).get(agentId);
+    return !!row;
+}
+
+// 內部：多態解析 target → 活躍角色清單（v1.2.2）
+function _resolveRegsByTarget(db, target) {
+    if (!target) return [];
+    // 嘗試 agent_id（含多角色）
+    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+    if (ids.length > 0) {
+        const placeholders = ids.map(() => '?').join(',');
+        const rows = db.prepare(
+            `SELECT agent_id, role, session_id, term_key, status FROM agents
+             WHERE agent_id IN (${placeholders}) AND status IN ('active','attached')
+             ORDER BY created_at ASC`
+        ).all(...ids);
+        if (rows.length > 0) return rows;
+    }
+    // 嘗試 term_key
+    const byTermKey = getRegistrationsByTermKey(db, target);
+    if (byTermKey.length > 0) return byTermKey;
+    // 嘗試 session_id
+    return getRegistrations(db, target) || [];
+}
+
+// v1.1.0 sendMessage / v1.2.2 去 Session 化：直查 DB 驗證 sender 活躍狀態
 // receiver === 'all': 廣播，對每個活躍 agent（排除 sender）各寫一筆
 // receiver === 'any': 先搶先得，寫單筆 receiver='any'
 // 其他: 直接寫指定 receiver
-export async function sendMessage(db, receiver, message, sender, sessionId, priority) {
-    // 安全驗證：非 SYSTEM sender 必須與 sessionId 的已登記角色之一吻合
+export async function sendMessage(db, receiver, message, sender, priority) {
+    // 安全驗證：非 SYSTEM sender 直查 DB 確認活躍狀態
     if (sender !== 'SYSTEM') {
-        const sid = sessionId || resolveSessionId();
-        const regs = getRegistrations(db, sid);
-        if (!regs || regs.length === 0) {
-            throw Object.assign(new Error('401: 此會話尚未登記為 Agent 身份，請先呼叫 register_agent'), { code: 'ERR_UNAUTHORIZED' });
-        }
-        const match = regs.find(r => r.agent_id === sender);
-        if (!match) {
-            throw Object.assign(new Error(`401: sender 不符，登記身份為 ${regs.map(r => r.agent_id).join('/')}`), { code: 'ERR_UNAUTHORIZED' });
+        if (!_isActiveAgent(db, sender)) {
+            throw Object.assign(new Error(`401: sender "${sender}" 未登記為活躍 Agent，請先呼叫 register_agent`), { code: 'ERR_UNAUTHORIZED' });
         }
     }
 
@@ -61,12 +84,10 @@ export async function sendMessage(db, receiver, message, sender, sessionId, prio
     return { message_id: msgId, status: 'UNREAD' };
 }
 
-// v1.1.0 listUnread
-// - 若指定 receiver，需與 sessionId 活躍角色（或其 role?）吻合
-// - 若 receiver null 或 'all'，列出該 session 所有角色的未讀聯集（含 any）
-export function listUnread(db, receiver, sessionId) {
-    const sid = sessionId || resolveSessionId();
-
+// v1.1.0 listUnread / v1.2.2：target 必填多態解析，移除 sessionId 依賴
+// - 若指定 receiver，需在 target 解析的活躍角色名單中，否則拋出 403
+// - 若 receiver null 或 'all'，列出名單所有角色的未讀聯集（含 any）
+export function listUnread(db, receiver, target) {
     // 釋放超時的 IN_PROGRESS
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -80,10 +101,9 @@ export function listUnread(db, receiver, sessionId) {
         try { db.exec('ROLLBACK'); } catch (__) {}
     }
 
-    const regs = getRegistrations(db, sid);
+    const regs = _resolveRegsByTarget(db, target);
 
     if (!receiver || receiver === 'all') {
-        // 列出該 session 所有角色未讀聯集（含 any）
         if (!regs || regs.length === 0) return { messages: [], count: 0 };
 
         const agentIds = regs.map(r => r.agent_id);
@@ -100,16 +120,21 @@ export function listUnread(db, receiver, sessionId) {
     }
 
     // 指定 receiver：橫向越權檢驗
-    if (regs && regs.length > 0) {
-        const agentIds = regs.map(r => r.agent_id);
-        const pools    = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
-        const allowed  = new Set([...agentIds, ...pools]);
-        if (!allowed.has(receiver)) {
-            throw Object.assign(
-                new Error(`403: receiver "${receiver}" 不屬於當前 session 的活躍角色，禁止越權查詢`),
-                { code: 'ERR_FORBIDDEN' }
-            );
-        }
+    // target 解析不到任何活躍角色時直接拒絕，防止空 target 繞過授權
+    if (!regs || regs.length === 0) {
+        throw Object.assign(
+            new Error(`403: target 解析不到任何活躍角色，禁止查詢 receiver "${receiver}"`),
+            { code: 'ERR_FORBIDDEN' }
+        );
+    }
+    const agentIds = regs.map(r => r.agent_id);
+    const pools    = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
+    const allowed  = new Set([...agentIds, ...pools]);
+    if (!allowed.has(receiver)) {
+        throw Object.assign(
+            new Error(`403: receiver "${receiver}" 不屬於 target 解析的活躍角色，禁止越權查詢`),
+            { code: 'ERR_FORBIDDEN' }
+        );
     }
 
     let rows;
@@ -139,34 +164,19 @@ export function listUnread(db, receiver, sessionId) {
     return { messages: rows, count: rows.length };
 }
 
-function _resolvePrimaryAgentId(db, sessionId) {
-    const termKey = process.env.PIC_TERM_KEY || process.env.WT_SESSION;
-    if (termKey) {
-        const termRegs = getRegistrationsByTermKey(db, termKey);
-        if (termRegs && termRegs.length > 0) {
-            return (termRegs.find(r => r.status === 'active') ?? termRegs[0]).agent_id;
-        }
-    }
-    const sid = sessionId || resolveSessionId();
-    const regs = getRegistrations(db, sid);
-    if (regs && regs.length > 0) {
-        return (regs.find(r => r.status === 'active') ?? regs[0]).agent_id;
-    }
-    return null;
-}
-
-// v1.1.0 claimMessage
-// - agent_id 必須與 sessionId 當前活躍角色吻合
+// v1.1.0 claimMessage / v1.2.2 去 Session 化：直查 DB 驗證 agent_id 活躍狀態
+// - agent_id 直查 DB 確認活躍（不比對 session_id）
 // - 訊息 receiver 須為該 agent_id / role? / 'any'
-export function claimMessage(db, message_id, agent_id, sessionId) {
-    const primaryAgentId = _resolvePrimaryAgentId(db, sessionId);
-    // 若有活躍主身份，agent_id 必須吻合
-    if (primaryAgentId && agent_id !== primaryAgentId) {
-        return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
+export function claimMessage(db, message_id, agent_id) {
+    // 直查 DB 確認 agent_id 活躍
+    if (!_isActiveAgent(db, agent_id)) {
+        return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
     }
 
-    const sid = sessionId || resolveSessionId();
-    const regs = getRegistrations(db, sid);
+    const agentRow = db.prepare(
+        `SELECT role FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`
+    ).get(agent_id);
+    const regs = agentRow ? [{ agent_id, role: agentRow.role }] : [];
 
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -206,13 +216,10 @@ export function claimMessage(db, message_id, agent_id, sessionId) {
     }
 }
 
-// v1.1.0 ackMessage
-// - agent_id 必須與 sessionId 當前活躍角色吻合且為原始搶鎖者
-export function ackMessage(db, message_id, agent_id, sessionId) {
-    const primaryAgentId = _resolvePrimaryAgentId(db, sessionId);
-    // 若有活躍主身份，agent_id 必須吻合
-    if (primaryAgentId && agent_id !== primaryAgentId) {
-        return { success: false, reason: `403: agent_id "${agent_id}" 與當前活躍角色 "${primaryAgentId}" 不符` };
+// v1.1.0 ackMessage / v1.2.2 去 Session 化：直查 DB 驗證 agent_id 活躍狀態且為搶鎖者
+export function ackMessage(db, message_id, agent_id) {
+    if (!_isActiveAgent(db, agent_id)) {
+        return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
     }
 
     db.exec('BEGIN IMMEDIATE');

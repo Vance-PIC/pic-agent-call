@@ -4,18 +4,21 @@ import { withRetry } from './db.mjs';
 const TIMEOUT_MINUTES = 30;
 
 
+// 僅供測試隔離使用，schema 與 P2 db-schema.md 不完整對齊（缺 session_id / role / attached 狀態）
+// 正式初始化請使用 src/db.mjs setup()
 export function initAgentsTable(db) {
     db.exec(`CREATE TABLE IF NOT EXISTS agents (
         agent_id          TEXT PRIMARY KEY,
         last_seen         TEXT,
-        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','offline')),
-        agent_timeout_sec INTEGER NOT NULL DEFAULT 120,
+        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
+        agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT,
+        term_key          TEXT NOT NULL DEFAULT '',
+        session_id        TEXT,
+        role              TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )`);
-    try { db.exec(`ALTER TABLE agents ADD COLUMN term_key TEXT`); } catch (_) {}
 }
 
 export async function createTask(db, feature, assign_to, payload, type, relay_to) {
@@ -25,7 +28,7 @@ export async function createTask(db, feature, assign_to, payload, type, relay_to
         return { success: false, reason: 'validation_error' };
     if (!payload || typeof payload !== 'string' || !payload.trim())
         return { success: false, reason: 'validation_error' };
-    if (Buffer.byteLength(payload, 'utf8') > 1048576)
+    if (Buffer.byteLength(payload, 'utf8') > 65536)
         return { success: false, reason: 'payload_too_large' };
 
     const validTypes = ['task', 'final'];
@@ -75,6 +78,14 @@ export function claimTask(db, task_id, agent_id) {
 
     db.exec('BEGIN IMMEDIATE');
     try {
+        const agentRow = db.prepare(
+            `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+        ).get(agent_id.trim());
+        if (!agentRow) {
+            db.exec('ROLLBACK');
+            return { success: false, reason: '403: agent_id 未登記為活躍狀態，禁止領取任務' };
+        }
+
         const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
         if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
         if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
@@ -95,7 +106,7 @@ export async function completeTask(db, task_id, result) {
     if (!task_id || result === undefined || result === null)
         return { success: false, reason: 'validation_error' };
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-    if (Buffer.byteLength(resultStr, 'utf8') > 1048576)
+    if (Buffer.byteLength(resultStr, 'utf8') > 65536)
         return { success: false, reason: 'payload_too_large' };
 
     let completedAt = null;
