@@ -183,7 +183,9 @@ export function initDatabase(dbPath, jsonPath) {
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
     // v1.1.4 三態：NULL term_key 補空字串
     db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);
-    // v1.1.4 唯一活躍角色索引：同 term_key 只能一個 active（空字串豁免）
+    // v1.2.2 強制重建 idx_agents_term_active（predicate 從 "... AND term_key != ''" 改為無豁免）
+    // IF NOT EXISTS 無法更新 predicate，必須先 DROP 再 CREATE
+    try { db.exec(`DROP INDEX IF EXISTS idx_agents_term_active`); } catch (_) {}
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active'`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
