@@ -29,8 +29,18 @@
 - **參數調整**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)，強制呼叫端在註冊時必須傳入其視窗 UUID。
 - **隔離接管卡控**：在 forced 接管時，清理同 session 殘留角色的 SQL 必須同時過濾 `session_id` 與 `term_key`，避免跨視窗誤踢他人角色。
 
-### 2.4 安全驗證去 Session 化 (Decouple Session for Security Gate)
-- 在 `channel_send`、`channel_claim`、`channel_ack` 與 `claim_task` 等安全檢查中，改為直接依據 `agent_id` (或 `sender`) 於資料庫直查其是否為活躍角色（`active` / `attached`），不再透過 `resolveSessionId()` 獲取名單比對，防止因 Session 誤判碰撞而誤拒合法操作。
+### 2.4 訊息未讀查詢優化 (`channel_list_unread`)
+- **功能**：列出當前視窗或指定角色的未讀訊息聯集。
+- **輸入參數**：
+  - `target` (string, **Required**): 定位識別碼。移除背景 `resolveSessionId` 推導，強制要求傳入定位標的。
+  - `receiver` (string, Optional): 原本的 receiver 參數，可傳入特定角色。
+- **多態與安全規則**：
+  - 內部使用多態解析 `target` 取得活躍角色名單。
+  - 若指定了 `receiver`，則必須確認該 `receiver` 存在於該名單中，否則拋出 `403 Forbidden` 拒絕存取，確保跨視窗的信箱隔離安全。
+
+### 2.5 安全驗證去 Session 直查 (`channel` / `tasks` 模組)
+- **範圍**：適用於 `channel_send` (發送者驗證)、`channel_claim` (領取驗證)、`channel_ack` (確認驗證) 與 `claim_task` 等 API。
+- **需求**：移除對 `resolveSessionId()` 隱式名單的依賴，直接拿傳入的角色 ID (如 `sender` 或 `agent_id`) 於資料庫直查其活躍狀態（`active` / `attached`），只要為活躍狀態即通過驗證，徹底防堵 Session 碰撞誤阻。
 
 ---
 
