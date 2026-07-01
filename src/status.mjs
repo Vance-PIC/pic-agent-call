@@ -177,14 +177,15 @@ function _parseAgentIds(rawAgentId, sessionId) {
 // v1.1.2：加 termKey 參數，寫入 agents.term_key（傳入 WT_SESSION，跨 session 重啟穩定）
 // v1.1.3：三道防線 upsert — 一道:resume(換視窗), 二道:同視窗新session, 三道:INSERT或衝突
 // v1.1.4：三態模型（active/attached/offline），移除 is_primary
+// v1.2.2：target 必填，forced SQL 同時卡控 session_id + term_key 防誤踢跨視窗角色
 // 回傳 { success, registered_agents, session_id, forced, term_key, orphans_notified? }
-export function registerAgent(db, sessionId, agentId, role, forced = false, termKey = null) {
+export function registerAgent(db, sessionId, agentId, role, forced = false, target = '') {
     const parsed = _parseAgentIds(agentId, sessionId);
 
     let totalOrphans = 0;
     const registeredAgents = [];
 
-    const resolvedTermKey = termKey || '';
+    const resolvedTermKey = target || '';
     // 視窗轉移：同 term_key 下舊 session 整批設為 offline
     if (resolvedTermKey) {
         db.prepare(
@@ -211,7 +212,7 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
             ).all(aid, sessionId);
             for (const { agent_id: oldId, term_key: oldTermKey } of oldRows) {
                 // 只有跨視窗強奪（term_key 不同）才孤兒化；同視窗重啟保留訊息
-                if (oldTermKey && termKey && oldTermKey === termKey) continue;
+                if (oldTermKey && resolvedTermKey && oldTermKey === resolvedTermKey) continue;
                 totalOrphans += handleOrphanedMessages(db, oldId, aid);
             }
             db.prepare(
@@ -297,14 +298,22 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
         registeredAgents.push({ agent_id: aid, role: finalRole || null });
     }
 
-    // §6.12.7: forced 時，同 session 不在新名單的殘留角色軟離線
+    // §6.12.7 / v1.2.2: forced 時，同 session 且同 term_key 視窗下不在新名單的殘留角色軟離線
+    // 同時卡控 session_id + term_key，防止誤踢相同 session_id 但不同 term_key 的其他視窗角色
     if (forced && parsed.length > 0) {
         const newIds = parsed.map(p => p.agentId);
         const placeholders = newIds.map(() => '?').join(',');
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE session_id = ? AND agent_id NOT IN (${placeholders})`
-        ).run(sessionId, ...newIds);
+        if (resolvedTermKey) {
+            db.prepare(
+                `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                 WHERE session_id = ? AND term_key = ? AND agent_id NOT IN (${placeholders})`
+            ).run(sessionId, resolvedTermKey, ...newIds);
+        } else {
+            db.prepare(
+                `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                 WHERE session_id = ? AND (term_key IS NULL OR term_key = '') AND agent_id NOT IN (${placeholders})`
+            ).run(sessionId, ...newIds);
+        }
     }
 
     const result = {
@@ -320,13 +329,103 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
     return result;
 }
 
+// 多態註銷（v1.2.2 新增）
+// target 優先序：agent_id → term_key → session_id
+export function unregisterAgent(db, target) {
+    if (!target) return { success: false, reason: 'target is required' };
+
+    // 嘗試 agent_id（支援逗號分隔多角色）
+    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+    const byAgentId = db.prepare(
+        `SELECT agent_id FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+    );
+    const hitsByAgentId = ids.flatMap(id => {
+        const row = byAgentId.get(id);
+        return row ? [row.agent_id] : [];
+    });
+    if (hitsByAgentId.length > 0) {
+        const placeholders = hitsByAgentId.map(() => '?').join(',');
+        db.prepare(
+            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+             WHERE agent_id IN (${placeholders})`
+        ).run(...hitsByAgentId);
+        return { success: true, unregistered_agents: hitsByAgentId };
+    }
+
+    // 嘗試 term_key
+    const byTermKey = db.prepare(
+        `SELECT agent_id FROM agents WHERE term_key = ? AND status IN ('active','attached')`
+    ).all(target);
+    if (byTermKey.length > 0) {
+        db.prepare(
+            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+             WHERE term_key = ? AND status IN ('active','attached')`
+        ).run(target);
+        return { success: true, unregistered_agents: byTermKey.map(r => r.agent_id) };
+    }
+
+    // 嘗試 session_id
+    const bySession = db.prepare(
+        `SELECT agent_id FROM agents WHERE session_id = ? AND status IN ('active','attached')`
+    ).all(target);
+    if (bySession.length > 0) {
+        db.prepare(
+            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+             WHERE session_id = ? AND status IN ('active','attached')`
+        ).run(target);
+        return { success: true, unregistered_agents: bySession.map(r => r.agent_id) };
+    }
+
+    return { success: false, reason: `no active agent found for target: ${target}` };
+}
+
 // 查詢 agent 狀態（給 statusline 用）
 // v1.1.0 多角色：回傳 { agent_id, role, unread, display, registered_agents }
 // display 格式：▶🔴1·CC-PG1  🟢0·CC-SA1
-// primaryAgentId: 由 server.mjs 從快取讀出，標示 ▶
-export function getAgentStatus(db, sessionId, primaryAgentId) {
-    const regs = getRegistrations(db, sessionId);
-    if (!regs || regs.length === 0) return null;
+// v1.2.2：target 必填，多態定位（agent_id → term_key → session_id），移除 primaryAgentId 外部傳入
+export function getAgentStatus(db, target) {
+    if (!target) return { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' };
+
+    // 多態定位：agent_id → term_key → session_id
+    let regs = null;
+    let resolvedSessionId = null;
+
+    // 嘗試 agent_id（單一或多角色）
+    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+    if (ids.length > 0) {
+        const placeholders = ids.map(() => '?').join(',');
+        const byAgentId = db.prepare(
+            `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents
+             WHERE agent_id IN (${placeholders}) AND status IN ('active','attached')
+             ORDER BY created_at ASC`
+        ).all(...ids);
+        if (byAgentId.length > 0) {
+            regs = byAgentId;
+            resolvedSessionId = byAgentId[0].session_id;
+        }
+    }
+
+    // 嘗試 term_key
+    if (!regs) {
+        const byTermKey = getRegistrationsByTermKey(db, target);
+        if (byTermKey.length > 0) {
+            regs = byTermKey;
+            resolvedSessionId = byTermKey[0].session_id;
+        }
+    }
+
+    // 嘗試 session_id
+    if (!regs) {
+        const bySession = getRegistrations(db, target);
+        if (bySession && bySession.length > 0) {
+            regs = bySession;
+            resolvedSessionId = target;
+        }
+    }
+
+    if (!regs || regs.length === 0) {
+        return { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' };
+    }
 
     const { statusLineFreshnessMin, historyPurgeMin } = readAgentSettings();
     const freshnessSec = statusLineFreshnessMin * 60;
@@ -345,7 +444,7 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     // 心跳降頻：10s 內不重複更新 last_seen（fire-and-forget，不阻塞 statusline 輸出）
     const lastRow = db.prepare(
         `SELECT MAX(last_seen) as last_seen FROM agents WHERE session_id = ? AND status IN ('active','attached')`
-    ).get(sessionId);
+    ).get(resolvedSessionId);
     const lastSeenMs = lastRow?.last_seen ? new Date(lastRow.last_seen).getTime() : 0;
     const staleSec = (Date.now() - lastSeenMs) / 1000;
     if (staleSec >= 10) {
@@ -353,15 +452,12 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
             try {
                 db.prepare(
                     `UPDATE agents SET last_seen = datetime('now','localtime') WHERE session_id = ? AND status IN ('active','attached')`
-                ).run(sessionId);
+                ).run(resolvedSessionId);
             } catch (_) {}
         });
     }
 
-    // primaryAgentId 由外部傳入（server.mjs 讀快取），預設用第一個 active agent
-    if (!primaryAgentId) {
-        primaryAgentId = regs.find(r => r.status === 'active')?.agent_id ?? regs[0].agent_id;
-    }
+    const primaryAgentId = regs.find(r => r.status === 'active')?.agent_id ?? regs[0].agent_id;
 
     // freshness 判定：以 active agent 的 last_seen 為基準
     const activeReg = regs.find(r => r.status === 'active');
@@ -406,11 +502,13 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     const primary = regs.find(r => r.agent_id === primaryAgentId) ?? regs[0];
 
     return {
+        registered: true,
         agent_id: primary.agent_id,
         role: primary.role || null,
         unread: totalUnread,
         display,
         registered_agents: registeredAgents,
+        session_id: resolvedSessionId,
     };
 }
 

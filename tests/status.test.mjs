@@ -313,11 +313,12 @@ describe('getAgentStatus()', () => {
   beforeEach(() => { db = makeDb(); });
   afterEach(() => { try { db.close(); } catch (_) {} });
 
-  // 15. 未 register session → 回傳 null
+  // 15. 未 register session → 回傳 { registered: false }
   test('15. 未 register 的 session 回傳 null', () => {
     const result = getAgentStatus(db, 'sess-unknown');
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result.registered).toBe(false);
   });
 
   // 16. 有 register，無未讀 → display 含 🟢0·agent_id
@@ -514,7 +515,7 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     // 手動將 CC-PG1 設為 offline，last_seen 設 3 天前（不觸發 7-day 清理）
     db.prepare(`UPDATE agents SET status='offline', last_seen=datetime('now','localtime','-3 days') WHERE agent_id='CC-PG1'`).run();
     const beforeLastSeen = db.prepare(`SELECT last_seen FROM agents WHERE agent_id='CC-PG1'`).get().last_seen;
-    getAgentStatus(db, 'sess-hb', 'CC-PG1');
+    getAgentStatus(db, 'sess-hb');
     const row = db.prepare(`SELECT status, last_seen FROM agents WHERE agent_id='CC-PG1'`).get();
     expect(row.status).toBe('offline');
     expect(row.last_seen).toBe(beforeLastSeen);
@@ -550,7 +551,7 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
        VALUES ('AGY-SA1','SA','sess-b',datetime('now','localtime','-2 seconds'),'active',1,datetime('now','localtime'))`
     ).run();
 
-    getAgentStatus(db, 'sess-a', 'CC-PG1');
+    getAgentStatus(db, 'sess-a');
     const agySa = db.prepare(`SELECT status FROM agents WHERE agent_id='AGY-SA1'`).get();
     expect(agySa.status).toBe('offline');
     delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -568,7 +569,7 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     const before = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
     expect(before).toBeTruthy();
 
-    getAgentStatus(db, 'sess-clean', 'CC-PG1');
+    getAgentStatus(db, 'sess-clean');
     const after = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
     expect(after).toBeUndefined();
     delete process.env.CLAUDE_CODE_SESSION_ID;
