@@ -107,9 +107,13 @@ pic-agent-call/
 #### register_agent 參數與清理規範（v1.2.2 優化）
 
 為了提高 API 參數命名的精確度，並落實多視窗安全防禦，`register_agent` 進行以下修正：
-1. **`target` 必填參數**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。傳入值強制為當前終端機的環境變數 `$env:PIC_TERM_KEY`。
-2. **強制接管卡控**：在 `forced=true` 接管同名角色時，清理同 session 殘留角色的 SQL 必須同時過濾 `session_id` 與 `term_key`，即：
-   `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime') WHERE session_id = ? AND term_key = ? AND agent_id NOT IN (...)`
+1. **`target` 必填參數與 Library 卡控**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。傳入值強制為 `$env:PIC_TERM_KEY`。在 `registerAgent` 函式內第一步必須強制檢驗，若 `target` 為空直接回傳 `{ success: false, reason: 'target_required' }`，拒絕寫入空 `term_key`。
+2. **原子化 Timeout 與 Transaction Retry**：
+   - 將 `timeout` 參數移入 `registerAgent` 函式內部，使其與註冊寫入在同一個 transaction 內原子更新。
+   - 將 `registerAgent` 定義為 **`async`** 函式，且整個 transaction 包裹在 `withRetry` 非同步重試邏輯中，解決多視窗並發寫入時的 `SQLITE_BUSY` 鎖定錯誤。
+3. **強制接管卡控與 Active 鎖定釋放**：
+   - 不論是否為 `forced` 註冊，在執行註冊迴圈前，都必須先將當前會話下的所有 active 角色狀態重置為 `attached`，以釋放 `idx_agents_term_active` 索引，防範主從角色切換時的唯一性約束衝突。
+   - 在 `forced=true` 清理舊角色時，SQL 同時過濾 `session_id` 與 `term_key`。
    （以保證只有當前視窗下的舊角色會被設為 offline，絕不誤殺相同 session_id 但不同 term_key 的其他視窗角色）。
 
 > **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位與三道防線承擔。
@@ -145,9 +149,12 @@ pic-agent-call/
 #### 協作與任務 API 去 Session 化安全直查（v1.2.2 重構）
 
 在以下 API 的安全驗證中，徹底去 Session 化以杜絕 session 碰撞阻擋：
-- **`channel_send`**、**`channel_claim`**、**`channel_ack`**、**`claim_task`**：
+- **`channel_claim`**、**`channel_ack`**、**`claim_task`**：
   - 內部實作將**不再呼叫 `resolveSessionId()`**。
-  - 安全驗證直接以傳入的 `sender` 或 `agent_id` 去資料庫直查其 `status` 是否為 `'active'` 或 `'attached'`，只要該角色為活躍狀態即通過驗證放行。
+  - 安全驗證直接以傳入的 `agent_id` 去資料庫直查其 `status` 是否為 `'active'` 或 `'attached'`，只要該角色為活躍狀態即通過驗證放行。
+- **`channel_send` (MCP 安全防偽造)**：
+  - MCP 工具層移除 `sender` 參數，改為必填的 `target` 參數。
+  - 內部實作由 `target` 定位出活躍角色群，並強制提取其中狀態為 `'active'` 的主角色作為發送者 `sender`。若無主角色則拒絕發送。
 - **`create_task`**、**`complete_task`**、**`fail_task`**：
   - 移除對 `sessionId` 的參數傳遞與隱式比對，簡化為無狀態任務申報。
 
@@ -275,10 +282,10 @@ pic-agent-call/
      * **`offline`**：離線/超時角色。不顯示於狀態列中。
    * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色：
      ```sql
-     CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
-     ```
-   * **視窗移轉 (A/B 情境整批轉移與主角色重設防衝突)**：
-     * 當新會話在當前視窗啟動時，先斷開舊會話的活躍狀態，再整批繫結：
+    * **唯一活躍約束 (不豁免空值)**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色。由於 library 已卡控 `term_key` 不能為空，索引不包含 `AND term_key != ''` 的豁免：
+      ```sql
+      CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
+      ```
        ```sql
        -- 1. 斷開此視窗下其他舊會話的活躍狀態（設為 offline）
        UPDATE agents SET status = 'offline' WHERE term_key = ? AND session_id != ?

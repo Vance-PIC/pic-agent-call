@@ -250,12 +250,19 @@ export function findAgentIdConflict(
 // 2. 對每個傳送者發 SYSTEM channel 通知
 // 3. 將孤兒訊息標記為 ORPHANED
 // 回傳孤兒訊息數量
-export function handleOrphanedMessages(
+// 內部 transaction 專用 (無獨立 transaction / withRetry)
+export function _handleOrphanedMessages(
   db: DatabaseSync,
   oldAgentId: string,
   newAgentId: string
 ): number
 
+// 外部公開 API (自帶 withRetry 與 transaction 包裹)
+export function handleOrphanedMessages(
+  db: DatabaseSync,
+  oldAgentId: string,
+  newAgentId: string
+): Promise<number>
 // Upsert agent registration
 // ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線：
 // - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串。
@@ -279,10 +286,10 @@ export function registerAgent(
   agentId: string,
   role?: string,
   forced?: boolean,
-  termKey?: string,   // PIC_TERM_KEY GUID（v1.1.3）；未傳入則由內部環境變數解析
+  target: string,     // 必填的視窗/定位標的 (v1.2.2)
   timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
-): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
- | { success: false, reason: string }
+): Promise<{ success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
+ | { success: false, reason: string }>
 
 ## src/channel.mjs
 
@@ -444,12 +451,19 @@ export function findAgentIdConflict(
 // 2. 對每個傳送者發 SYSTEM channel 通知
 // 3. 將孤兒訊息標記為 ORPHANED
 // 回傳孤兒訊息數量
-export function handleOrphanedMessages(
+// 內部 transaction 專用 (無獨立 transaction / withRetry)
+export function _handleOrphanedMessages(
   db: DatabaseSync,
   oldAgentId: string,
   newAgentId: string
 ): number
 
+// 外部公開 API (自帶 withRetry 與 transaction 包裹)
+export function handleOrphanedMessages(
+  db: DatabaseSync,
+  oldAgentId: string,
+  newAgentId: string
+): Promise<number>
 // Upsert agent registration
 // ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線：
 // - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串。
@@ -475,8 +489,8 @@ export function registerAgent(
   forced?: boolean,
   target: string,     // 必填的視窗/定位標的 (v1.2.2)
   timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
-): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
- | { success: false, reason: string }
+): Promise<{ success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
+ | { success: false, reason: string }>
 
 // 註銷指定角色（v1.2.2 新增）
 // - 參數 target 為必填多態定位鍵（可為角色 ID、視窗 UUID 或會話 ID）
