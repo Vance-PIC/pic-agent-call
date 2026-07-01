@@ -140,8 +140,8 @@ describe('getRegistration()', () => {
   // 5. 有記錄回傳 { agent_id, role, session_id }
   test('5. 有記錄時回傳 { agent_id, role, session_id }', () => {
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-       VALUES ('CC-PG1', 'PG', 'sess-001', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at, term_key)
+       VALUES ('CC-PG1', 'PG', 'sess-001', datetime('now','localtime'), 'active', datetime('now','localtime'), 'term-CC-PG1')`
     ).run();
 
     const result = getRegistration(db, 'sess-001');
@@ -164,8 +164,8 @@ describe('findAgentIdConflict()', () => {
   // 6. 同 agent_id 不同 session → 回傳衝突記錄
   test('6. 同 agent_id 不同 session 回傳衝突記錄', () => {
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-       VALUES ('CC-SA1', 'SA', 'sess-other', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at, term_key)
+       VALUES ('CC-SA1', 'SA', 'sess-other', datetime('now','localtime'), 'active', datetime('now','localtime'), 'term-CC-SA1')`
     ).run();
 
     const result = findAgentIdConflict(db, 'CC-SA1', 'sess-mine');
@@ -178,8 +178,8 @@ describe('findAgentIdConflict()', () => {
   // 7. 同 agent_id 同 session → 回傳 null（不算衝突）
   test('7. 同 agent_id 同 session 回傳 null（不算衝突）', () => {
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-       VALUES ('CC-SA1', 'SA', 'sess-mine', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at, term_key)
+       VALUES ('CC-SA1', 'SA', 'sess-mine', datetime('now','localtime'), 'active', datetime('now','localtime'), 'term-CC-SA1')`
     ).run();
 
     const result = findAgentIdConflict(db, 'CC-SA1', 'sess-mine');
@@ -252,8 +252,8 @@ describe('registerAgent()', () => {
   test('12. forced=true 接管他 session 時，對 sender 發送 SYSTEM 通知', async () => {
     // 舊 session 登記 CC-AGENT-A（需與 _parseAgentIds 自動補前綴後相符）
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-       VALUES ('CC-AGENT-A', 'PG', 'sess-old', datetime('now','localtime'), 'active', datetime('now','localtime'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at, term_key)
+       VALUES ('CC-AGENT-A', 'PG', 'sess-old', datetime('now','localtime'), 'active', datetime('now','localtime'), 'term-CC-AGENT-A')`
     ).run();
 
     insertChannelMsg(db, {
@@ -547,8 +547,8 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     // 另一個 session 的 agent，超時 1 秒，last_seen 設為很久以前
     // last_seen 設 2 秒前，timeout=1 秒 → 超時但不到 7 天（不觸發清理）
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, agent_timeout_sec, updated_at)
-       VALUES ('AGY-SA1','SA','sess-b',datetime('now','localtime','-2 seconds'),'active',1,datetime('now','localtime'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, agent_timeout_sec, updated_at, term_key)
+       VALUES ('AGY-SA1','SA','sess-b',datetime('now','localtime','-2 seconds'),'active',1,datetime('now','localtime'),'term-AGY-SA1')`
     ).run();
 
     getAgentStatus(db, 'sess-a');
@@ -563,8 +563,8 @@ describe('§6.12.7 動態離線與生命週期防護', () => {
     await registerAgent(db, 'sess-clean', 'CC-PG1', 'PG1', false, 'wt-clean');
     // 插入一個 offline 且 8 天前最後活動的角色
     db.prepare(
-      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-       VALUES ('CC-OLD1','OLD','sess-old',datetime('now','localtime','-8 days'),'offline',datetime('now','localtime','-8 days'))`
+      `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at, term_key)
+       VALUES ('CC-OLD1','OLD','sess-old',datetime('now','localtime','-8 days'),'offline',datetime('now','localtime','-8 days'),'term-CC-OLD1')`
     ).run();
     const before = db.prepare(`SELECT agent_id FROM agents WHERE agent_id='CC-OLD1'`).get();
     expect(before).toBeTruthy();

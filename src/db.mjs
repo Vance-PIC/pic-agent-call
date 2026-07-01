@@ -141,7 +141,9 @@ export function initDatabase(dbPath, jsonPath) {
         status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
         agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT NOT NULL DEFAULT '',
+        term_key          TEXT NOT NULL,
+        session_id        TEXT,
+        role              TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )`);
@@ -181,8 +183,8 @@ export function initDatabase(dbPath, jsonPath) {
     // 注意：is_primary 欄位本身未物理移除（SQLite DROP COLUMN 有前提限制）
     // 欄位已廢棄不使用，DB 邏輯以 status='active'/'attached' 為準
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
-    // v1.1.4 三態：NULL term_key 補空字串
-    db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);
+    // v1.2.2 NULL term_key 遷移：標 offline + fallback 為 legacy-{agent_id}，防 active unique 索引衝突
+    db.exec(`UPDATE agents SET status = 'offline', term_key = 'legacy-' || agent_id WHERE term_key IS NULL OR term_key = ''`);
     // v1.2.2 強制重建 idx_agents_term_active（predicate 從 "... AND term_key != ''" 改為無豁免）
     // IF NOT EXISTS 無法更新 predicate，必須先 DROP 再 CREATE
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_term_active`); } catch (_) {}
@@ -218,6 +220,15 @@ export function syncDbToJson(db, jsonPath) {
     _syncTimers.set(jsonPath, timer);
 }
 
+// 取消防抖計時器（供測試 teardown 或 server shutdown 使用，防止 DB 已關閉後計時器觸發）
+export function cancelDbJsonSync(jsonPath) {
+    if (jsonPath) {
+        if (_syncTimers.has(jsonPath)) { clearTimeout(_syncTimers.get(jsonPath)); _syncTimers.delete(jsonPath); }
+        return;
+    }
+    for (const [p, t] of _syncTimers) { clearTimeout(t); _syncTimers.delete(p); }
+}
+
 async function _doSyncDbToJson(db, jsonPath) {
     try {
         const rows = db.prepare(`
@@ -249,6 +260,8 @@ async function _doSyncDbToJson(db, jsonPath) {
             }
         }
     } catch (err) {
+        // db 已關閉（測試 teardown / server shutdown）時靜默跳過
+        if (err.code === 'ERR_INVALID_STATE' || (err.message && err.message.includes('database is not open'))) return;
         console.error('[pic-agent-call] _doSyncDbToJson: sync failed', err);
     }
 }

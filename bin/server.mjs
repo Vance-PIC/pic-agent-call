@@ -143,7 +143,7 @@ server.tool('claim_task',
     '【task-broker】原子操作領取任務，防搶單。BEGIN IMMEDIATE 交易確保排他性。',
     { task_id: z.string(), agent_id: z.string().min(1).max(100) },
     async (args) => {
-        const r = tasks.claimTask(db, args.task_id, args.agent_id);
+        const r = await tasks.claimTask(db, args.task_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -204,7 +204,7 @@ server.tool('channel_list_unread',
         target: z.string().describe('查詢定位標的：agent_id、$env:PIC_TERM_KEY 或 session_id。用於多態解析活躍角色並進行 403 越權防禦。'),
     },
     async (args) => {
-        return textJson(channel.listUnread(db, args.receiver || null, args.target));
+        return textJson(await channel.listUnread(db, args.receiver || null, args.target));
     }
 );
 
@@ -212,7 +212,7 @@ server.tool('channel_claim',
     '【channel】原子搶鎖：將 UNREAD 訊息標記為 IN_PROGRESS。只有搶鎖者才能 ACK。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const r = channel.claimMessage(db, args.message_id, args.agent_id);
+        const r = await channel.claimMessage(db, args.message_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -221,7 +221,7 @@ server.tool('channel_ack',
     '【channel】確認完成：將 IN_PROGRESS 訊息標記為 READ。只有搶鎖者才能 ACK。',
     { message_id: z.string(), agent_id: z.string() },
     async (args) => {
-        const r = channel.ackMessage(db, args.message_id, args.agent_id);
+        const r = await channel.ackMessage(db, args.message_id, args.agent_id);
         return { content: [{ type: 'text', text: JSON.stringify(r) }], ...(r.success === false ? { isError: true } : {}) };
     }
 );
@@ -276,7 +276,7 @@ server.tool('unregister_agent',
         target: z.string().describe('註銷定位標的：agent_id（支援逗號多角色）、$env:PIC_TERM_KEY（視窗 UUID）或 session_id'),
     },
     async ({ target }) => {
-        const result = unregisterAgent(db, target);
+        const result = await unregisterAgent(db, target);
         return textJson(result);
     }
 );
@@ -288,7 +288,7 @@ server.tool('agent_status',
     },
     async ({ target }) => {
         const status = getAgentStatus(db, target);
-        return textJson(status ?? { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' });
+        return textJson(status);
     }
 );
 

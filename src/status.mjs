@@ -100,8 +100,8 @@ export function findAgentIdConflict(db, agentId, sessionId) {
     ).get(agentId, sessionId) || null;
 }
 
-// 處理換角色時的孤兒訊息（internal）：
-// 由 registerAgent 外層 transaction 包覆呼叫，不可再起 nested transaction
+// @internal 處理換角色時的孤兒訊息：
+// 由 registerAgent 外層 transaction 包覆呼叫，不可再起 nested transaction，不可 export
 // 回傳 orphan_count
 function _handleOrphanedMessages(db, oldAgentId, newAgentId) {
     const orphans = db.prepare(
@@ -341,52 +341,64 @@ export async function registerAgent(db, sessionId, agentId, role, forced = false
 
 // 多態註銷（v1.2.2 新增）
 // target 優先序：agent_id → term_key → session_id
-export function unregisterAgent(db, target) {
+export async function unregisterAgent(db, target) {
     if (!target) return { success: false, reason: 'target is required' };
 
-    // 嘗試 agent_id（支援逗號分隔多角色）
-    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
-    const byAgentId = db.prepare(
-        `SELECT agent_id FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
-    );
-    const hitsByAgentId = ids.flatMap(id => {
-        const row = byAgentId.get(id);
-        return row ? [row.agent_id] : [];
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            // 嘗試 agent_id（支援逗號分隔多角色）
+            const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+            const byAgentId = db.prepare(
+                `SELECT agent_id FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+            );
+            const hitsByAgentId = ids.flatMap(id => {
+                const row = byAgentId.get(id);
+                return row ? [row.agent_id] : [];
+            });
+            if (hitsByAgentId.length > 0) {
+                const placeholders = hitsByAgentId.map(() => '?').join(',');
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE agent_id IN (${placeholders})`
+                ).run(...hitsByAgentId);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: hitsByAgentId };
+            }
+
+            // 嘗試 term_key
+            const byTermKey = db.prepare(
+                `SELECT agent_id FROM agents WHERE term_key = ? AND status IN ('active','attached')`
+            ).all(target);
+            if (byTermKey.length > 0) {
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE term_key = ? AND status IN ('active','attached')`
+                ).run(target);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: byTermKey.map(r => r.agent_id) };
+            }
+
+            // 嘗試 session_id
+            const bySession = db.prepare(
+                `SELECT agent_id FROM agents WHERE session_id = ? AND status IN ('active','attached')`
+            ).all(target);
+            if (bySession.length > 0) {
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE session_id = ? AND status IN ('active','attached')`
+                ).run(target);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: bySession.map(r => r.agent_id) };
+            }
+
+            db.exec('ROLLBACK');
+            return { success: false, reason: `no active agent found for target: ${target}` };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
     });
-    if (hitsByAgentId.length > 0) {
-        const placeholders = hitsByAgentId.map(() => '?').join(',');
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE agent_id IN (${placeholders})`
-        ).run(...hitsByAgentId);
-        return { success: true, unregistered_agents: hitsByAgentId };
-    }
-
-    // 嘗試 term_key
-    const byTermKey = db.prepare(
-        `SELECT agent_id FROM agents WHERE term_key = ? AND status IN ('active','attached')`
-    ).all(target);
-    if (byTermKey.length > 0) {
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE term_key = ? AND status IN ('active','attached')`
-        ).run(target);
-        return { success: true, unregistered_agents: byTermKey.map(r => r.agent_id) };
-    }
-
-    // 嘗試 session_id
-    const bySession = db.prepare(
-        `SELECT agent_id FROM agents WHERE session_id = ? AND status IN ('active','attached')`
-    ).all(target);
-    if (bySession.length > 0) {
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE session_id = ? AND status IN ('active','attached')`
-        ).run(target);
-        return { success: true, unregistered_agents: bySession.map(r => r.agent_id) };
-    }
-
-    return { success: false, reason: `no active agent found for target: ${target}` };
 }
 
 // 查詢 agent 狀態（給 statusline 用）
@@ -574,3 +586,6 @@ export function getAgentsByPlatformStatus(db, platformPrefix) {
         return { agent_id, role: role || null, status, unread: row?.count || 0 };
     });
 }
+
+// @deprecated no-op — 保留 export 供 api-spec 相容，實作已由 getAgentStatus 內嵌清理取代
+export function cleanExpiredAgentSessionCache(db, sessionDir) {}

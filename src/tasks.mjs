@@ -2,10 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { withRetry } from './db.mjs';
 
 const TIMEOUT_MINUTES = 30;
+const TIMEOUT_SECONDS = TIMEOUT_MINUTES * 60;
 
 
-// 僅供測試隔離使用，schema 與 P2 db-schema.md 不完整對齊（缺 session_id / role / attached 狀態）
-// 正式初始化請使用 src/db.mjs setup()
+// 僅供測試隔離使用（初始化 agents 表）；正式初始化請使用 src/db.mjs setup()
 export function initAgentsTable(db) {
     db.exec(`CREATE TABLE IF NOT EXISTS agents (
         agent_id          TEXT PRIMARY KEY,
@@ -13,7 +13,7 @@ export function initAgentsTable(db) {
         status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
         agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT NOT NULL DEFAULT '',
+        term_key          TEXT NOT NULL,
         session_id        TEXT,
         role              TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -42,14 +42,22 @@ export async function createTask(db, feature, assign_to, payload, type, relay_to
         return { success: false, reason: 'validation_error' };
 
     const hash = createHash('sha256').update(feature + '|' + payload).digest('hex');
-    const existing = db.prepare('SELECT task_id, status, type FROM tasks WHERE payload_hash = ?').get(hash);
-    if (existing) return { task_id: existing.task_id, status: existing.status, type: existing.type, idempotent: true };
-
     const taskId = 'task-' + randomUUID();
-    await withRetry(() => {
-        db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+    const result = await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const existing = db.prepare('SELECT task_id, status, type FROM tasks WHERE payload_hash = ?').get(hash);
+            if (existing) { db.exec('ROLLBACK'); return { task_id: existing.task_id, status: existing.status, type: existing.type, idempotent: true }; }
+            db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+            db.exec('COMMIT');
+            return null;
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
     });
+    if (result) return result;
     return { task_id: taskId, status: 'pending', type: resolvedType, idempotent: false };
 }
 
@@ -62,7 +70,7 @@ export function listPendingTasks(db, assign_to) {
              SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
          ) < datetime('now','localtime','-' || COALESCE(
              (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
-             ${TIMEOUT_MINUTES * 60}
+             ${TIMEOUT_SECONDS}
          ) || ' seconds')`
     ).run();
 
@@ -72,34 +80,36 @@ export function listPendingTasks(db, assign_to) {
     return { tasks: rows, count: rows.length };
 }
 
-export function claimTask(db, task_id, agent_id) {
+export async function claimTask(db, task_id, agent_id) {
     if (!task_id || !agent_id || typeof agent_id !== 'string' || !agent_id.trim() || agent_id.length > 100)
         return { success: false, reason: 'validation_error' };
 
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        const agentRow = db.prepare(
-            `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
-        ).get(agent_id.trim());
-        if (!agentRow) {
-            db.exec('ROLLBACK');
-            return { success: false, reason: '403: agent_id 未登記為活躍狀態，禁止領取任務' };
-        }
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const agentRow = db.prepare(
+                `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+            ).get(agent_id.trim());
+            if (!agentRow) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: '403: agent_id 未登記為活躍狀態，禁止領取任務' };
+            }
 
-        const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
-        if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
-        if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
-        const changes = db.prepare(
-            `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='pending'`
-        ).run(agent_id.trim(), task_id).changes;
-        if (changes === 0) { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: 'claimed', claimed_by: null }; }
-        db.exec('COMMIT');
-        const claimed = db.prepare('SELECT claimed_at FROM tasks WHERE task_id = ?').get(task_id);
-        return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: claimed.claimed_at };
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
-    }
+            const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
+            if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
+            if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
+            const changes = db.prepare(
+                `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='pending'`
+            ).run(agent_id.trim(), task_id).changes;
+            if (changes === 0) { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: 'claimed', claimed_by: null }; }
+            db.exec('COMMIT');
+            const claimed = db.prepare('SELECT claimed_at FROM tasks WHERE task_id = ?').get(task_id);
+            return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: claimed.claimed_at };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 }
 
 export async function completeTask(db, task_id, result) {

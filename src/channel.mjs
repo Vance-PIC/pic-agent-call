@@ -87,24 +87,32 @@ export async function sendMessage(db, receiver, message, sender, priority) {
 // v1.1.0 listUnread / v1.2.2：target 必填多態解析，移除 sessionId 依賴
 // - 若指定 receiver，需在 target 解析的活躍角色名單中，否則拋出 403
 // - 若 receiver null 或 'all'，列出名單所有角色的未讀聯集（含 any）
-export function listUnread(db, receiver, target) {
-    // 釋放超時的 IN_PROGRESS
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        db.prepare(
-            `UPDATE agent_collaboration_channel
-             SET status = 'UNREAD', lock_owner = NULL, lock_time = NULL, updated_at = datetime('now','localtime')
-             WHERE status = 'IN_PROGRESS' AND lock_time < datetime('now','localtime','-15 minutes')`
-        ).run();
-        db.exec('COMMIT');
-    } catch (_) {
-        try { db.exec('ROLLBACK'); } catch (__) {}
-    }
+export async function listUnread(db, receiver, target) {
+    // 釋放超時的 IN_PROGRESS（withRetry 防 SQLITE_BUSY 吞掉）
+    await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            db.prepare(
+                `UPDATE agent_collaboration_channel
+                 SET status = 'UNREAD', lock_owner = NULL, lock_time = NULL, updated_at = datetime('now','localtime')
+                 WHERE status = 'IN_PROGRESS' AND lock_time < datetime('now','localtime','-15 minutes')`
+            ).run();
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 
     const regs = _resolveRegsByTarget(db, target);
 
     if (!receiver || receiver === 'all') {
-        if (!regs || regs.length === 0) return { messages: [], count: 0 };
+        if (!regs || regs.length === 0) {
+            throw Object.assign(
+                new Error(`403: target 解析不到任何活躍角色，禁止查詢`),
+                { code: 'ERR_FORBIDDEN' }
+            );
+        }
 
         const agentIds = regs.map(r => r.agent_id);
         const roles    = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
@@ -145,7 +153,7 @@ export function listUnread(db, receiver, target) {
              ORDER BY priority DESC, created_at ASC`
         ).all(receiver);
     } else {
-        const reg = regs?.find(r => r.agent_id === receiver);
+        const reg = regs.find(r => r.agent_id === receiver);
         const pool = reg?.role ? `${reg.role}?` : null;
         if (pool) {
             rows = db.prepare(
@@ -167,7 +175,7 @@ export function listUnread(db, receiver, target) {
 // v1.1.0 claimMessage / v1.2.2 去 Session 化：直查 DB 驗證 agent_id 活躍狀態
 // - agent_id 直查 DB 確認活躍（不比對 session_id）
 // - 訊息 receiver 須為該 agent_id / role? / 'any'
-export function claimMessage(db, message_id, agent_id) {
+export async function claimMessage(db, message_id, agent_id) {
     // 直查 DB 確認 agent_id 活躍
     if (!_isActiveAgent(db, agent_id)) {
         return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
@@ -178,67 +186,71 @@ export function claimMessage(db, message_id, agent_id) {
     ).get(agent_id);
     const regs = agentRow ? [{ agent_id, role: agentRow.role }] : [];
 
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        const row = db.prepare(
-            `SELECT status, lock_owner, receiver FROM agent_collaboration_channel WHERE message_id = ?`
-        ).get(message_id);
-        if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'message not found' }; }
-        if (row.status !== 'UNREAD') {
-            db.exec('ROLLBACK');
-            return { success: false, reason: `already ${row.status} by ${row.lock_owner || 'unknown'}` };
-        }
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const row = db.prepare(
+                `SELECT status, lock_owner, receiver FROM agent_collaboration_channel WHERE message_id = ?`
+            ).get(message_id);
+            if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'message not found' }; }
+            if (row.status !== 'UNREAD') {
+                db.exec('ROLLBACK');
+                return { success: false, reason: `already ${row.status} by ${row.lock_owner || 'unknown'}` };
+            }
 
-        // 訊息接收者須為該 agent_id / role? / 'any'
-        const reg = regs?.find(r => r.agent_id === agent_id);
-        const pool = reg?.role ? `${reg.role}?` : null;
-        const allowed = new Set([agent_id, 'any']);
-        if (pool) allowed.add(pool);
-        if (!allowed.has(row.receiver)) {
-            db.exec('ROLLBACK');
-            return { success: false, reason: `403: 訊息 receiver "${row.receiver}" 不屬於 agent_id "${agent_id}" 的授權範圍` };
-        }
+            // 訊息接收者須為該 agent_id / role? / 'any'
+            const reg = regs.find(r => r.agent_id === agent_id);
+            const pool = reg?.role ? `${reg.role}?` : null;
+            const allowed = new Set([agent_id, 'any']);
+            if (pool) allowed.add(pool);
+            if (!allowed.has(row.receiver)) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: `403: 訊息 receiver "${row.receiver}" 不屬於 agent_id "${agent_id}" 的授權範圍` };
+            }
 
-        db.prepare(
-            `UPDATE agent_collaboration_channel
-             SET status='IN_PROGRESS', lock_owner=?, lock_time=datetime('now','localtime'), updated_at=datetime('now','localtime')
-             WHERE message_id=? AND status='UNREAD' AND lock_owner IS NULL`
-        ).run(agent_id, message_id);
-        const updated = db.prepare(
-            `SELECT lock_owner FROM agent_collaboration_channel WHERE message_id = ?`
-        ).get(message_id);
-        db.exec('COMMIT');
-        if (updated.lock_owner === agent_id) return { success: true, message_id };
-        return { success: false, reason: 'race: claimed by another agent' };
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        return { success: false, reason: err.message };
-    }
+            db.prepare(
+                `UPDATE agent_collaboration_channel
+                 SET status='IN_PROGRESS', lock_owner=?, lock_time=datetime('now','localtime'), updated_at=datetime('now','localtime')
+                 WHERE message_id=? AND status='UNREAD' AND lock_owner IS NULL`
+            ).run(agent_id, message_id);
+            const updated = db.prepare(
+                `SELECT lock_owner FROM agent_collaboration_channel WHERE message_id = ?`
+            ).get(message_id);
+            db.exec('COMMIT');
+            if (updated.lock_owner === agent_id) return { success: true, message_id };
+            return { success: false, reason: 'race: claimed by another agent' };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 }
 
 // v1.1.0 ackMessage / v1.2.2 去 Session 化：直查 DB 驗證 agent_id 活躍狀態且為搶鎖者
-export function ackMessage(db, message_id, agent_id) {
+export async function ackMessage(db, message_id, agent_id) {
     if (!_isActiveAgent(db, agent_id)) {
         return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
     }
 
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        const row = db.prepare(
-            `SELECT status, lock_owner FROM agent_collaboration_channel WHERE message_id = ?`
-        ).get(message_id);
-        if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'message not found' }; }
-        if (row.status !== 'IN_PROGRESS' || row.lock_owner !== agent_id) {
-            db.exec('ROLLBACK');
-            return { success: false, reason: `not owned: status=${row.status} owner=${row.lock_owner}` };
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const row = db.prepare(
+                `SELECT status, lock_owner FROM agent_collaboration_channel WHERE message_id = ?`
+            ).get(message_id);
+            if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'message not found' }; }
+            if (row.status !== 'IN_PROGRESS' || row.lock_owner !== agent_id) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: `not owned: status=${row.status} owner=${row.lock_owner}` };
+            }
+            db.prepare(
+                `UPDATE agent_collaboration_channel SET status='READ', updated_at=datetime('now','localtime') WHERE message_id=?`
+            ).run(message_id);
+            db.exec('COMMIT');
+            return { success: true, message_id };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
         }
-        db.prepare(
-            `UPDATE agent_collaboration_channel SET status='READ', updated_at=datetime('now','localtime') WHERE message_id=?`
-        ).run(message_id);
-        db.exec('COMMIT');
-        return { success: true, message_id };
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        return { success: false, reason: err.message };
-    }
+    });
 }
