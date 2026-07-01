@@ -227,6 +227,9 @@ server.tool('register_agent',
         timeout: z.number().int().positive().optional().describe('agent 超時分鐘數，寫入 DB 時自動乘以 60 換算為秒數；未傳入時沿用預設值（1440 分鐘 / 24 小時）。'),
     },
     async ({ agent_id, role, force, target, timeout }) => {
+        if (!target || !target.trim()) {
+            return textJson({ success: false, reason: 'target_required' });
+        }
         const sessionId = resolveSessionId();
 
         // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）

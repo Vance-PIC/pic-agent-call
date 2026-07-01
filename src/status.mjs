@@ -470,11 +470,12 @@ export function getAgentStatus(db, target) {
 
     const primaryAgentId = regs.find(r => r.status === 'active')?.agent_id ?? regs[0].agent_id;
 
-    // freshness 判定：以 active agent 的 last_seen 為基準
+    // freshness 判定：以 active agent 的 last_seen 為基準，超過閾值標記 stale（不修改 DB 狀態）
     const activeReg = regs.find(r => r.status === 'active');
+    let isSessionFresh = true;
     if (activeReg?.last_seen) {
         const ageSec = (Date.now() - new Date(activeReg.last_seen).getTime()) / 1000;
-        if (ageSec > freshnessSec) return null;
+        if (ageSec > freshnessSec) isSessionFresh = false;
     }
 
     const unreadStmt = db.prepare(
@@ -491,7 +492,7 @@ export function getAgentStatus(db, target) {
     const parts = [];
 
     // No Jitter：regs 已依 created_at ASC 排列，不重新排序
-    for (const { agent_id, role } of regs) {
+    for (const { agent_id, role, last_seen } of regs) {
         let row;
         if (role) {
             row = unreadStmt.get(agent_id, `${role}?`);
@@ -501,12 +502,20 @@ export function getAgentStatus(db, target) {
         const unread = row?.count || 0;
         totalUnread += unread;
 
+        // 每個 agent 個別計算 freshness
+        let agentFresh = true;
+        if (last_seen) {
+            const agentAgeSec = (Date.now() - new Date(last_seen).getTime()) / 1000;
+            if (agentAgeSec > freshnessSec) agentFresh = false;
+        }
+        const freshness = agentFresh ? 'fresh' : 'stale';
+
         const isPrimary = agent_id === primaryAgentId;
-        const dot = unread > 0 ? '🔴' : '🟢';
+        const dot = !agentFresh ? '🟡' : (unread > 0 ? '🔴' : '🟢');
         const prefix = isPrimary ? '\x1b[33m▶\x1b[0m' : '';
         parts.push(`${prefix}${dot}${unread}·${agent_id}`);
 
-        registeredAgents.push({ agent_id, role: role || null, unread });
+        registeredAgents.push({ agent_id, role: role || null, unread, freshness });
     }
 
     const display = parts.join('  ');
