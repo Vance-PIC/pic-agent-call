@@ -101,26 +101,55 @@ pic-agent-call/
 | Tool | 對應模組函式 |
 |------|-------------|
 | register_agent | status.registerAgent |
+| unregister_agent | status.unregisterAgent |
 | agent_status | status.getAgentStatus |
 
-#### register_agent 規範（v1.1.3）
+#### register_agent 參數與清理規範（v1.2.2 優化）
 
-`register_agent` MCP tool 更新 SQLite `agents` 表，並將 `PIC_TERM_KEY`（Windows Terminal session GUID）寫入 `agents.term_key` 欄位作為跨 session 識別依據。
+為了提高 API 參數命名的精確度，並落實多視窗安全防禦，`register_agent` 進行以下修正：
+1. **`target` 必填參數**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。傳入值強制為當前終端機的環境變數 `$env:PIC_TERM_KEY`。
+2. **強制接管卡控**：在 `forced=true` 接管同名角色時，清理同 session 殘留角色的 SQL 必須同時過濾 `session_id` 與 `term_key`，即：
+   `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime') WHERE session_id = ? AND term_key = ? AND agent_id NOT IN (...)`
+   （以保證只有當前視窗下的舊角色會被設為 offline，絕不誤殺相同 session_id 但不同 term_key 的其他視窗角色）。
 
-#### register_agent 參數重命名規範（v1.2.2）
+> **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位與三道防線承擔。
 
-為了提高 API 參數命名的精確度，`register_agent` 的 `wt_session` 參數重命名為 `term_key`。其說明文字亦同步更新：傳入值應為 `$env:PIC_TERM_KEY`（不限於 `WT_SESSION`）。
+#### unregister_agent 規格（v1.2.2 新增）
 
-> **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位承擔。
+為滿足註冊管理的完整 CRUD 閉環，新增主動註銷工具：
+1. **輸入參數**：`target` (string, **Required**) — 註銷定位標的。
+2. **多態註銷邏輯**：
+   - 優先序 1：若 `target` 命中 DB 中的 `agent_id`（支援多角色逗號分割），將該角色的 status 改為 `'offline'`。
+   - 優先序 2：若 `target` 命中 DB 中的 `term_key`，將該視窗下的所有活躍角色 status 改為 `'offline'`。
+   - 優先序 3：若 `target` 命中 DB 中的 `session_id`，將該對話會話下的所有活躍角色 status 改為 `'offline'`。
 
-#### register_agent 與 agent_status 隔離優化（v1.2.2）
+#### agent_status 多態查詢規範（v1.2.2 重構）
 
-為了防止在全域單例的 MCP 伺服器環境中，因 `session_id` 誤判碰撞（如 `detectActiveAgyConversationId` 競態）導致不同終端視窗的角色在 `force` 註冊時被標記為離線：
+為了徹底阻斷因 `session_id` 誤判碰撞產生的狀態列污染，`agent_status` 進行以下重構：
+1. **輸入參數**：`target` (string, **Required**) — 查詢定位標的。原自動推導與 fallback 掃描目錄邏輯完全移除。
+2. **多態查詢與心跳邏輯**：
+   - 伺服器依據 `target` 的值（按 `agent_id` ➔ `term_key` ➔ `session_id` 優先序）在 DB 中檢索出對應的活躍角色名單。
+   - 對這批活躍角色執行 heartbeats 更新（將其 `last_seen` 更新為當前時間）。
+   - 撈取這批角色的未讀訊息聯集並計算總數，回傳狀態列所需要的 display 文字與燈號（狀態列 wrapper 腳本在背景呼叫時，必須帶入 `target=$env:PIC_TERM_KEY`）。
 
-1. **清理條件卡控 (`register_agent`)**：
-   在 `registerAgent` 內部的 forced 清理邏輯中，`UPDATE agents SET status = 'offline' ...` 語法必須同時過濾 `session_id` 與 `term_key`（即僅清理當前 Terminal 視窗下的舊角色），防止將相同 `session_id` 但不同 `term_key` 的其他視窗角色踢下線。
-2. **精確路由支援 (`agent_status`)**：
-   `agent_status` MCP 工具增加可選參數 `term_key`。若傳入該參數，MCP 伺服器將優先使用 `getRegistrationsByTermKey` 尋找 DB 中對應的 `session_id`，以解決多視窗下 Session ID 被誤判碰撞的問題。
+#### channel_list_unread 多態未讀查詢（v1.2.2 優化）
+
+1. **輸入參數**：
+   - `target` (string, **Required**) — 查詢定位標的。
+   - `receiver` (string, Optional) — 指定接收者。
+2. **多態與安全規則**：
+   - 內部先以 `target` 進行多態解析獲取當前活躍角色名單。
+   - **安全隔離卡控**：若傳入了 `receiver` 參數，則必須驗證該 `receiver` 包含在上述解析出的活躍名單中，否則拋出 `403 Forbidden`，防止跨視窗非法拉取他人信箱。
+   - 以名單內所有角色的 `agent_id` 及其 `role?` 郵箱，撈取未讀訊息聯集。
+
+#### 協作與任務 API 去 Session 化安全直查（v1.2.2 重構）
+
+在以下 API 的安全驗證中，徹底去 Session 化以杜絕 session 碰撞阻擋：
+- **`channel_send`**、**`channel_claim`**、**`channel_ack`**、**`claim_task`**：
+  - 內部實作將**不再呼叫 `resolveSessionId()`**。
+  - 安全驗證直接以傳入的 `sender` 或 `agent_id` 去資料庫直查其 `status` 是否為 `'active'` 或 `'attached'`，只要該角色為活躍狀態即通過驗證放行。
+- **`create_task`**、**`complete_task`**、**`fail_task`**：
+  - 移除對 `sessionId` 的參數傳遞與隱式比對，簡化為無狀態任務申報。
 
 ---
 

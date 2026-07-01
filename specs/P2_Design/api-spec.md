@@ -98,9 +98,8 @@ export function searchNodes(
 
 ```js
 // 傳送訊息
-// ⚠️ v1.1.0 安全與廣播強化：
-// - MCP 工具層移除 sender 參數以防偽造。
-// - sendMessage 調整為接收 sessionId，並在內部驗證 sender 是否與該 sessionId 對應的活躍角色（即本地快取 agent_id）吻合（SYSTEM 豁免）。
+// ⚠️ v1.1.0 安全與廣播強化 / v1.2.2 去 Session 直查：
+// - sendMessage 改為直接驗證 sender 是否在 DB 中登記為活躍狀態，移除對 sessionId 的依賴。
 // - 支援廣播與任意信箱類型：
 //   - 若 receiver === 'all'，自動複製訊息並廣播分發給當前所有活躍狀態的 agent（status = 'active'，排除 sender 本身），各自寫入 receiver = 'agent_id' 的獨立記錄。
 //   - 若 receiver === 'any'，直接寫入單筆 receiver = 'any' 記錄，採先搶先得機制。
@@ -108,41 +107,38 @@ export function sendMessage(
   db: DatabaseSync,
   receiver: string,   // 具體名稱 | pool? | any | all
   message: string,
-  sender: string,
-  sessionId: string,
+  sender: string,     // 角色 ID
   priority?: number   // 1~10，預設 5
 ): { message_id: string, status: 'UNREAD' }
 
 // 列出未讀（自動釋放 IN_PROGRESS > 15 分鐘 → UNREAD）
-// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：執行橫向越權檢驗。
-// - 若指定 receiver，該 receiver 必須為當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）或其對應之 role 郵箱，否則拋出安全性錯誤。其返回結果應包含發送給該 agent_id、其 role?、以及發送給 'any' 且狀態為 'UNREAD' 的訊息。
-// - 若 receiver 未指定或為 'all'，則自動列出該 sessionId 所綁定之所有活躍角色之未讀訊息的聯集。
+// ⚠️ v1.1.0 安全強化 / v1.2.2 優化：執行橫向越權檢驗與多態未讀查詢。
+// - 增加必填參數 target (string)，移除對 sessionId 的依賴。
+// - 內部以 target 執行多態解析獲取活躍角色，若指定了 receiver 則必須確認該 receiver 包含在該名單中，否則拋出 403。
 export function listUnread(
   db: DatabaseSync,
   receiver: string | null,
-  sessionId: string
+  target: string
 ): { messages: Message[], count: number }
 
 // 原子搶鎖（BEGIN IMMEDIATE）
-// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份校驗。
-// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）完全吻合，否則拒絕。
+// ⚠️ v1.1.0 安全強化 / v1.2.2 去 Session 化：
+// - 操作者 agent_id 直接在 DB 中直查驗證其 status 是否為活躍（active/attached），不再比對 sessionId。
 // - 訊息的接收者必須為該 agent_id（或其 role?、或 'any'），否則拒絕操作。
 export function claimMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string,
-  sessionId: string
+  agent_id: string
 ): { success: true, message_id: string }
  | { success: false, reason: string }
 
 // ACK 確認完成（lock_owner 須吻合）
-// ⚠️ v1.1.0 安全強化 / v1.1.3 更新：嚴格執行當前活躍身份與搶鎖者吻合校驗。
-// - 操作者 agent_id 必須與當前活躍角色（由 DB 查詢 agents.term_key = PIC_TERM_KEY 識別）完全吻合，且必須為原始搶鎖者，否則拒絕。
+// ⚠️ v1.1.0 安全強化 / v1.2.2 去 Session 化：
+// - 操作者 agent_id 直接在 DB 中直查其活躍狀態（active/attached），不再比對 sessionId。
 export function ackMessage(
   db: DatabaseSync,
   message_id: string,
-  agent_id: string,
-  sessionId: string
+  agent_id: string
 ): { success: true, message_id: string }
  | { success: false, reason: string }
 ```
@@ -477,16 +473,37 @@ export function registerAgent(
   agentId: string,
   role?: string,
   forced?: boolean,
-  termKey?: string,   // PIC_TERM_KEY GUID（v1.1.3）；未傳入則由內部環境變數解析
+  target: string,     // 必填的視窗/定位標的 (v1.2.2)
   timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
 ): { success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }
 
-// 查詢 agent 狀態（給 statusline 用）
+// 註銷指定角色（v1.2.2 新增）
+// - 參數 target 為必填多態定位鍵（可為角色 ID、視窗 UUID 或會話 ID）
+// - 將 DB 中符合該 target 條件的角色 status 更新為 'offline'
+export function unregisterAgent(
+  db: DatabaseSync,
+  target: string
+): { success: true, unregistered_agents: Array<string> }
+ | { success: false, reason: string }
+
+// 查詢 agent 狀態（給 statusline 用）（v1.2.2 重構）
+// - 參數 target 為必填多態定位鍵（優先序：agent_id ➔ term_key ➔ session_id）
 // - 執行心跳更新與超時處理（含 10 秒心跳降頻與背景非同步讀寫分離）。
 // - 檢測超時：將 last_seen 超過 1440 分鐘（24小時）的活躍角色標記為 'offline'。
 // - 歷史清理：每次檢測時自動 DELETE 清理 offline 且 last_seen 超過 10080 分鐘（7天）的角色紀錄。
 // - 新鮮度判定：當讀取時 last_seen 超過 120 分鐘（7200秒）的角色，在 display 燈號中顯示為黃燈 🟡（不改變其 DB 存活狀態）。
+export function getAgentStatus(
+  db: DatabaseSync,
+  target: string
+): {
+  registered: boolean,
+  agent_id?: string,
+  role?: string,
+  unread: number,
+  display: string,
+  registered_agents: Array<{ agent_id: string, role: string, unread: number }>,
+  session_id?: string
 } | null
 
 // 查詢同平台所有已登記 agent 的未讀數（供多角色並列狀態列用）
