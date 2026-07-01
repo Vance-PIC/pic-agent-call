@@ -109,6 +109,15 @@ pic-agent-call/
 
 > **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位承擔。
 
+#### register_agent 與 agent_status 隔離優化（v1.2.2）
+
+為了防止在全域單例的 MCP 伺服器環境中，因 `session_id` 誤判碰撞（如 `detectActiveAgyConversationId` 競態）導致不同終端視窗的角色在 `force` 註冊時被標記為離線：
+
+1. **清理條件卡控 (`register_agent`)**：
+   在 `registerAgent` 內部的 forced 清理邏輯中，`UPDATE agents SET status = 'offline' ...` 語法必須同時過濾 `session_id` 與 `term_key`（即僅清理當前 Terminal 視窗下的舊角色），防止將相同 `session_id` 但不同 `term_key` 的其他視窗角色踢下線。
+2. **精確路由支援 (`agent_status`)**：
+   `agent_status` MCP 工具增加可選參數 `wt_session`。若傳入該參數，MCP 伺服器將優先使用 `getRegistrationsByTermKey` 尋找 DB 中對應的 `session_id`，以解決多視窗下 Session ID 被誤判碰撞的問題。
+
 ---
 
 ## 5. 參照文件（L2）
