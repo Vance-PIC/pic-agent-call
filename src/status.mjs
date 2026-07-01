@@ -472,10 +472,10 @@ export function getAgentStatus(db, target) {
 
     // freshness 判定：以 active agent 的 last_seen 為基準，超過閾值標記 stale（不修改 DB 狀態）
     const activeReg = regs.find(r => r.status === 'active');
-    let isSessionFresh = true;
+    let sessionFreshness = 'fresh';
     if (activeReg?.last_seen) {
         const ageSec = (Date.now() - new Date(activeReg.last_seen).getTime()) / 1000;
-        if (ageSec > freshnessSec) isSessionFresh = false;
+        if (ageSec > freshnessSec) sessionFreshness = 'stale';
     }
 
     const unreadStmt = db.prepare(
@@ -526,6 +526,7 @@ export function getAgentStatus(db, target) {
         agent_id: primary.agent_id,
         role: primary.role || null,
         unread: totalUnread,
+        freshness: sessionFreshness,
         display,
         registered_agents: registeredAgents,
         session_id: resolvedSessionId,
