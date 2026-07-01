@@ -44,7 +44,43 @@
 
 ---
 
-## 3. 驗收條件 (Definition of Done)
+## 3. 受影響之 API 範圍與需求變更清單 (11 個 API)
+
+### 3.1 狀態管理模組 (Status Module - 3 個 API)
+1. **`register_agent`**：
+   - 參數 `wt_session` 重命名為 `target` (Required，必填)。
+   - Forced 清理邏輯：同時以 `session_id` 與 `term_key = target` 進行同視窗舊角色清理。
+2. **`unregister_agent`** (新增)：
+   - 參數為 `target` (Required，必填)。
+   - 實作多態定位註銷（按角色/視窗/會話），將狀態設為 `'offline'`。
+3. **`agent_status`**：
+   - 參數 `target` 改為 **Required (必填)**。
+   - 實作多態查詢，移除所有背景 fallback/自動推導，僅由傳入的 `target` 唯一識別。
+
+### 3.2 協作通道模組 (Channel Module - 4 個 API)
+4. **`channel_list_unread`**：
+   - 參數增加 `target` (Required，必填)。
+   - 以 `target` 執行多態解析獲取活躍角色，進行未讀訊息撈取。指定 `receiver` 時進行安全卡控，不合則拋 `403`。
+5. **`channel_send`**：
+   - 安全驗證直查化（去 Session）：直接以 `sender` (角色 ID) 查詢 DB 活躍狀態。移除 `sessionId` 參數的傳遞與依賴。
+6. **`channel_claim`**：
+   - 安全驗證直查化：直接以操作者 `agent_id` 查詢 DB 活躍狀態。移除 `sessionId` 參數。
+7. **`channel_ack`**：
+   - 安全驗證直查化：直接以操作者 `agent_id` 查詢 DB 活躍狀態。移除 `sessionId` 參數。
+
+### 3.3 任務管理模組 (Tasks Module - 4 個 API)
+8. **`create_task`**：
+   - 移除 `sessionId` 參數傳遞，改為無狀態的任務創建。
+9. **`claim_task`**：
+   - 安全驗證直查化：直接以領取者 `agent_id` (executorId) 查詢 DB 活躍狀態。移除 `sessionId` 參數。
+10. **`complete_task`**：
+    - 移除 `sessionId` 參數傳遞，安全判定完全去 Session 化。
+11. **`fail_task`**：
+    - 移除 `sessionId` 參數傳遞，安全判定完全去 Session 化。
+
+---
+
+## 4. 驗收條件 (Definition of Done)
 - **規格服從**：`register_agent`、`unregister_agent`、`agent_status` 必須大一統使用 `target` 參數。
 - **多視窗隔離**：在 VS Code 中開啟兩個不同的 Terminal 視窗，註冊不同角色後，兩邊狀態列能精確、獨立顯示各自角色，不再發生互搶覆蓋。
 - **測試覆蓋**：更新 `tests/` 以適應 `target` 必填參數，執行 `npm run test` 所有測試 100% 通過。
