@@ -10,11 +10,12 @@ function makeDb() {
 }
 
 // 直接 INSERT agents（跳過 registerAgent 的 env prefix 邏輯，保持測試確定性）
+// 每個 agent 使用 agent_id 作為唯一 term_key，符合 idx_agents_term_active 唯一性要求
 function insertAgent(db, agentId, sessionId, role = 'PG') {
   db.prepare(
-    `INSERT INTO agents (agent_id, role, session_id, last_seen, status, updated_at)
-     VALUES (?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))`
-  ).run(agentId, role, sessionId);
+    `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+     VALUES (?, ?, ?, ?, datetime('now','localtime'), 'active', datetime('now','localtime'))`
+  ).run(agentId, role, sessionId, `term-${agentId}`);
 }
 
 // NOTE: sendMessage(db, receiver, message, sender, sessionId, priority)

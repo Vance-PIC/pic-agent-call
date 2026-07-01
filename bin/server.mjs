@@ -179,10 +179,21 @@ server.tool('get_task',
 
 server.tool('channel_send',
     '【channel】傳送訊息給指定 AI 視窗或 pool。',
-    { sender: z.string(), receiver: z.string(), message: z.string(),
-      priority: z.number().min(1).max(10).optional() },
+    {
+        target: z.string().describe('發送者定位標的：agent_id、$env:PIC_TERM_KEY 或 session_id。內部自動解析 active 主角色作為 sender，防止身份偽造。'),
+        receiver: z.string(),
+        message: z.string(),
+        priority: z.number().min(1).max(10).optional(),
+    },
     async (args) => {
-        return textJson(await channel.sendMessage(db, args.receiver, args.message, args.sender, args.priority));
+        // 由 target 解析 active 主角色作為 sender（防偽造）
+        const regs = channel._resolveRegsByTarget(db, args.target);
+        if (!regs || regs.length === 0) {
+            return textJson({ success: false, reason: '403: target 解析不到任何活躍角色，禁止發送' });
+        }
+        const activeReg = regs.find(r => r.status === 'active') ?? regs[0];
+        const sender = activeReg.agent_id;
+        return textJson(await channel.sendMessage(db, args.receiver, args.message, sender, args.priority));
     }
 );
 
@@ -227,9 +238,6 @@ server.tool('register_agent',
         timeout: z.number().int().positive().optional().describe('agent 超時分鐘數，寫入 DB 時自動乘以 60 換算為秒數；未傳入時沿用預設值（1440 分鐘 / 24 小時）。'),
     },
     async ({ agent_id, role, force, target, timeout }) => {
-        if (!target || !target.trim()) {
-            return textJson({ success: false, reason: 'target_required' });
-        }
         const sessionId = resolveSessionId();
 
         // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
@@ -248,22 +256,15 @@ server.tool('register_agent',
             }
         }
 
-        const result = registerAgent(db, sessionId, agent_id, role, !!force, target || '');
+        // timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
+        const effectiveTimeoutMin = timeout != null ? timeout : readAgentSettings().agentTimeoutMin;
+
+        // lib 層同時處理 target 必填、timeout 原子寫入
+        const result = await registerAgent(db, sessionId, agent_id, role, !!force, target, effectiveTimeoutMin);
         if (!result.success) return textJson(result);
 
-        // 寫入超時：timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
-        const effectiveTimeoutMin = timeout != null ? timeout : readAgentSettings().agentTimeoutMin;
-        if (result.registered_agents) {
-            const timeoutSec = effectiveTimeoutMin * 60;
-            const updateTimeout = db.prepare(
-                `UPDATE agents SET agent_timeout_sec = ? WHERE agent_id = ? AND session_id = ?`
-            );
-            for (const { agent_id: aid } of result.registered_agents) {
-                updateTimeout.run(timeoutSec, aid, sessionId);
-            }
-            result.agent_timeout_min = effectiveTimeoutMin;
-            result.agent_timeout_sec = timeoutSec;
-        }
+        result.agent_timeout_min = effectiveTimeoutMin;
+        result.agent_timeout_sec = effectiveTimeoutMin * 60;
 
         return textJson(result);
     }

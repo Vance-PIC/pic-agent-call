@@ -10,8 +10,8 @@ function _isActiveAgent(db, agentId) {
     return !!row;
 }
 
-// 內部：多態解析 target → 活躍角色清單（v1.2.2）
-function _resolveRegsByTarget(db, target) {
+// 多態解析 target → 活躍角色清單（v1.2.2）；供 server.mjs channel_send 防偽造使用
+export function _resolveRegsByTarget(db, target) {
     if (!target) return [];
     // 嘗試 agent_id（含多角色）
     const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);

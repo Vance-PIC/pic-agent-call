@@ -184,7 +184,7 @@ export function initDatabase(dbPath, jsonPath) {
     // v1.1.4 三態：NULL term_key 補空字串
     db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);
     // v1.1.4 唯一活躍角色索引：同 term_key 只能一個 active（空字串豁免）
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active' AND term_key != ''`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active'`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {
