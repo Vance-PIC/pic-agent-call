@@ -1,5 +1,5 @@
 import { initDatabase } from '../src/db.mjs';
-import { sendMessage, listUnread, claimMessage, ackMessage } from '../src/channel.mjs';
+import { sendMessage, listUnread, claimMessage, ackMessage, resolveRegsByTarget } from '../src/channel.mjs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -203,5 +203,21 @@ test('listUnread: 指定不屬於 session 的 receiver 拋出 403', async () => 
   insertAgent(db, 'CC-PG1', 'sess-sec-c');
 
   await expect(listUnread(db, 'CC-SA1', 'sess-sec-c')).rejects.toThrow('403');
+  db.close();
+});
+
+// ─── Spec 10: channel_send 無 active 主角色時拒絕（Medium 1 guard）────────
+test('resolveRegsByTarget: attached-only target 不含 active 角色', () => {
+  const db = makeDb();
+  // 插入一個 attached（非 active）agent
+  db.prepare(
+    `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+     VALUES ('CC-PG1', 'PG', 'sess-att', 'term-CC-PG1', datetime('now','localtime'), 'attached', datetime('now','localtime'))`
+  ).run();
+
+  const regs = resolveRegsByTarget(db, 'CC-PG1');
+  // target 可被解析（回傳非空），但無 active 主角色
+  expect(regs.length).toBeGreaterThan(0);
+  expect(regs.find(r => r.status === 'active')).toBeUndefined();
   db.close();
 });
