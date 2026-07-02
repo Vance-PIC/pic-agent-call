@@ -4,7 +4,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { createRequire } from 'node:module';
 const { version: _pkgVersion } = createRequire(import.meta.url)('../package.json');
 import { resolveMemoryPaths, initDatabase } from '../src/db.mjs';
@@ -15,7 +14,6 @@ import {
     resolveSessionId,
     getRegistration,
     getRegistrations,
-    findAgentIdConflict,
     registerAgent,
     unregisterAgent,
     getAgentStatus,
@@ -136,7 +134,7 @@ server.tool('create_task',
 server.tool('list_pending_tasks',
     '【task-broker】列出待處理（pending）任務。自動釋放逾時（>30 分鐘）的 claimed 任務。',
     { assign_to: z.string().optional() },
-    async (args) => textJson(tasks.listPendingTasks(db, args.assign_to))
+    async (args) => textJson(await tasks.listPendingTasks(db, args.assign_to))
 );
 
 server.tool('claim_task',
@@ -239,22 +237,6 @@ server.tool('register_agent',
     },
     async ({ agent_id, role, force, target, timeout }) => {
         const sessionId = resolveSessionId();
-
-        // 單角色時保留向下相容的 conflict 提示（多角色衝突在 registerAgent 內部處理）
-        const isSingle = !agent_id.match(/[,、;\/]/);
-        if (isSingle) {
-            const conflict = findAgentIdConflict(db, agent_id, sessionId);
-            if (conflict && !force) {
-                return textJson({
-                    conflict: true,
-                    occupied_by_session: conflict.session_id,
-                    current_role: conflict.role,
-                    debug_sessionId: sessionId,
-                    debug_homedir: os.homedir(),
-                    message: `agent_id "${agent_id}" 已被另一個 session（${conflict.session_id}）占用。請選擇其他 agent_id，或確認該 session 是否已失效。若確定舊 session 已死，可用 force=true 強制接管。`,
-                });
-            }
-        }
 
         // timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
         const effectiveTimeoutMin = timeout != null ? timeout : readAgentSettings().agentTimeoutMin;

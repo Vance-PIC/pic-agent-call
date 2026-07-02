@@ -155,7 +155,10 @@ export async function handleOrphanedMessages(db, oldAgentId, newAgentId) {
     });
 }
 
-// 解析多角色字串 → [{ agentId, role }]
+// §6.12.4.2：agent_id 禁止 GUID 格式，防止與 term_key/session_id 多態解析衝突
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 解析多角色字串 → [{ agentId, role }] 或 null（含 GUID 時）
 // 輸入：agentId="PJM、PDM、SA" 或 "AGY-PJM,AGY-PDM"
 // sessionId 用於決定平台前綴（CC- 或 AGY-）
 function _parseAgentIds(rawAgentId, sessionId) {
@@ -165,13 +168,18 @@ function _parseAgentIds(rawAgentId, sessionId) {
     const prefix = isAgy ? 'AGY-' : (isCc ? 'CC-' : (!process.env.CLAUDE_CODE_SESSION_ID ? 'AGY-' : 'CC-'));
 
     const parts = rawAgentId.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
-    return parts.map(part => {
+    const result = [];
+    for (const part of parts) {
         const upper = part.toUpperCase();
         const hasPrefix = upper.startsWith('CC-') || upper.startsWith('AGY-');
+        const rawToken = hasPrefix ? part.replace(/^(?:CC-|AGY-)/i, '') : part;
+        // 原始 token 與去前綴後 token 均禁止 GUID 格式
+        if (GUID_RE.test(part) || GUID_RE.test(rawToken)) return null;
         const fullId = hasPrefix ? part : `${prefix}${part}`;
-        const role = hasPrefix ? part.replace(/^(?:CC-|AGY-)/i, '') : part;
-        return { agentId: fullId, role };
-    });
+        const role = rawToken;
+        result.push({ agentId: fullId, role });
+    }
+    return result;
 }
 
 // Upsert agent registration
@@ -187,6 +195,9 @@ export async function registerAgent(db, sessionId, agentId, role, forced = false
 
     const resolvedTermKey = target.trim();
     const parsed = _parseAgentIds(agentId, sessionId);
+    if (!parsed) {
+        return { success: false, reason: 'agent_id_format_invalid' };
+    }
 
     return withRetry(() => {
         let totalOrphans = 0;

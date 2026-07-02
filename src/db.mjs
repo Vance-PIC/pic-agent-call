@@ -185,6 +185,40 @@ export function initDatabase(dbPath, jsonPath) {
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
     // v1.2.2 NULL term_key 遷移：標 offline + fallback 為 legacy-{agent_id}，防 active unique 索引衝突
     db.exec(`UPDATE agents SET status = 'offline', term_key = 'legacy-' || agent_id WHERE term_key IS NULL OR term_key = ''`);
+    // v1.2.2 rebuild migration：若舊表 term_key 仍為 nullable，重建整張 agents 表以強制 NOT NULL
+    {
+        const colInfo = db.prepare(`PRAGMA table_info(agents)`).all();
+        const termKeyCol = colInfo.find(c => c.name === 'term_key');
+        if (termKeyCol && termKeyCol.notnull === 0) {
+            db.exec(`BEGIN IMMEDIATE`);
+            try {
+                db.exec(`CREATE TABLE new_agents (
+                    agent_id          TEXT PRIMARY KEY,
+                    last_seen         TEXT,
+                    status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
+                    agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
+                    poll_interval_sec INTEGER NOT NULL DEFAULT 30,
+                    term_key          TEXT NOT NULL,
+                    session_id        TEXT,
+                    role              TEXT,
+                    created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                )`);
+                db.exec(`INSERT INTO new_agents
+                    (agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec, term_key, session_id, role, created_at, updated_at)
+                    SELECT agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec,
+                           COALESCE(NULLIF(term_key,''), 'legacy-' || agent_id),
+                           session_id, role, created_at, updated_at
+                    FROM agents`);
+                db.exec(`DROP TABLE agents`);
+                db.exec(`ALTER TABLE new_agents RENAME TO agents`);
+                db.exec(`COMMIT`);
+            } catch (err) {
+                try { db.exec(`ROLLBACK`); } catch (_) {}
+                throw err;
+            }
+        }
+    }
     // v1.2.2 強制重建 idx_agents_term_active（predicate 從 "... AND term_key != ''" 改為無豁免）
     // IF NOT EXISTS 無法更新 predicate，必須先 DROP 再 CREATE
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_term_active`); } catch (_) {}

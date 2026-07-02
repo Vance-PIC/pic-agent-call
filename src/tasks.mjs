@@ -61,18 +61,27 @@ export async function createTask(db, feature, assign_to, payload, type, relay_to
     return { task_id: taskId, status: 'pending', type: resolvedType, idempotent: false };
 }
 
-export function listPendingTasks(db, assign_to) {
+export async function listPendingTasks(db, assign_to) {
     const assignTo = (assign_to && typeof assign_to === 'string') ? assign_to.trim() : null;
-    // 超時釋放：基於認領該任務的 agent 的 agent_timeout_sec；fallback 用 TIMEOUT_MINUTES
-    db.prepare(
-        `UPDATE tasks SET status='pending', claimed_by=NULL, claimed_at=NULL, updated_at=datetime('now','localtime')
-         WHERE status='claimed' AND claimed_by IS NOT NULL AND (
-             SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
-         ) < datetime('now','localtime','-' || COALESCE(
-             (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
-             ${TIMEOUT_SECONDS}
-         ) || ' seconds')`
-    ).run();
+    // 超時釋放：withRetry 防 SQLITE_BUSY；BEGIN IMMEDIATE 確保原子性
+    await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            db.prepare(
+                `UPDATE tasks SET status='pending', claimed_by=NULL, claimed_at=NULL, updated_at=datetime('now','localtime')
+                 WHERE status='claimed' AND claimed_by IS NOT NULL AND (
+                     SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
+                 ) < datetime('now','localtime','-' || COALESCE(
+                     (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
+                     ${TIMEOUT_SECONDS}
+                 ) || ' seconds')`
+            ).run();
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 
     const rows = assignTo
         ? db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)

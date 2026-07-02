@@ -162,7 +162,7 @@ describe('listPendingTasks()', () => {
     const directRow = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(t2.task_id);
     expect(directRow.status).toBe('claimed');
 
-    const { tasks } = listPendingTasks(db);
+    const { tasks } = await listPendingTasks(db);
 
     // All returned tasks must have status='pending'
     tasks.forEach(t => expect(t.status).toBe('pending'));
@@ -174,7 +174,7 @@ describe('listPendingTasks()', () => {
     await createTask(db, 'feat', 'worker-B', 'pay-b');
     await createTask(db, 'feat', 'worker-A', 'pay-c');
 
-    const { tasks, count } = listPendingTasks(db, 'worker-A');
+    const { tasks, count } = await listPendingTasks(db, 'worker-A');
 
     expect(count).toBe(2);
     tasks.forEach(t => expect(t.assign_to).toBe('worker-A'));
@@ -203,7 +203,7 @@ describe('listPendingTasks()', () => {
     expect(before.status).toBe('claimed');
 
     // listPendingTasks triggers the timeout release
-    const { tasks } = listPendingTasks(db);
+    const { tasks } = await listPendingTasks(db);
 
     const released = tasks.find(t => t.task_id === task_id);
     expect(released).toBeDefined();

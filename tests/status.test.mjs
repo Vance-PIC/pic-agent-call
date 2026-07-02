@@ -708,23 +708,23 @@ describe('forced orphan — 同視窗重啟不孤兒化', () => {
   let db;
   beforeEach(() => { db = initDatabase(':memory:', ''); });
 
-  test('O1. 同 term_key force register 不觸發孤兒化', () => {
-    registerAgent(db, 'sess-old', 'CC-PG1', 'PG1', false, 'wt-abc');
+  test('O1. 同 term_key force register 不觸發孤兒化', async () => {
+    await registerAgent(db, 'sess-old', 'CC-PG1', 'PG1', false, 'wt-abc');
     db.prepare(`INSERT INTO agent_collaboration_channel (message_id, sender, receiver, message, status)
       VALUES ('msg-o1', 'AGY-SA1', 'CC-PG1', 'hello', 'UNREAD')`).run();
 
-    registerAgent(db, 'sess-new', 'CC-PG1', 'PG1', true, 'wt-abc');
+    await registerAgent(db, 'sess-new', 'CC-PG1', 'PG1', true, 'wt-abc');
 
     const msg = db.prepare(`SELECT status FROM agent_collaboration_channel WHERE message_id = 'msg-o1'`).get();
     expect(msg.status).toBe('UNREAD');
   });
 
-  test('O2. 跨視窗 force register 觸發孤兒化', () => {
-    registerAgent(db, 'sess-old2', 'CC-PG1', 'PG1', false, 'wt-old');
+  test('O2. 跨視窗 force register 觸發孤兒化', async () => {
+    await registerAgent(db, 'sess-old2', 'CC-PG1', 'PG1', false, 'wt-old');
     db.prepare(`INSERT INTO agent_collaboration_channel (message_id, sender, receiver, message, status)
       VALUES ('msg-o2', 'AGY-SA1', 'CC-PG1', 'hello', 'UNREAD')`).run();
 
-    registerAgent(db, 'sess-new2', 'CC-PG1', 'PG1', true, 'wt-new');
+    await registerAgent(db, 'sess-new2', 'CC-PG1', 'PG1', true, 'wt-new');
 
     const msg = db.prepare(`SELECT status FROM agent_collaboration_channel WHERE message_id = 'msg-o2'`).get();
     expect(msg.status).not.toBe('UNREAD');
