@@ -1,4 +1,4 @@
-# API Spec (L2) — pic-agent-call v1.1.3
+# API Spec (L2) — pic-agent-call v1.2.2
 
 ---
 
@@ -167,7 +167,7 @@ export function createTask(
 export function listPendingTasks(
   db: DatabaseSync,
   assignTo?: string
-): Promise<Array<any>>
+): Promise<{ tasks: Task[], count: number }>
 
 // 原子領取任務（BEGIN IMMEDIATE）
 export function claimTask(

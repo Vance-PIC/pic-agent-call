@@ -283,6 +283,7 @@ pic-agent-call/
     - 將任務 duplicate hash 的 `SELECT` 檢查移入同一 `BEGIN IMMEDIATE` 交易中，以解決 TOCTOU (Time-of-Check to Time-of-Use) 併發 race condition。
 4.4 **High-Risk 寫入 withRetry 補全範圍**：
     - 本次 Sprint 強制補全高風險寫入路徑的 `withRetry` 重試保護，包含：`claimMessage`、`ackMessage`、`claimTask`、`unregisterAgent`，以及 `listPendingTasks` 內部的超時釋放 `UPDATE`。
+    - **`claimMessage` 與 `ackMessage` 的 I5 安全卡控**：其內部的 active/attached 活躍授權狀態檢驗，**必須完全在 `BEGIN IMMEDIATE` 內部交易中執行**，以根除 TOCTOU Race Condition 越權漏洞。
     - 心跳背景更新（`getAgentStatus`）為了避免阻塞狀態列極速刷新，作為低風險技術債豁免，不加 `withRetry`。
 
 5. **多角色三態狀態模型 (Three-State Model) 與轉移規格 (v1.1.4 補正)**：
