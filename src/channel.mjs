@@ -11,7 +11,7 @@ function _isActiveAgent(db, agentId) {
 }
 
 // 多態解析 target → 活躍角色清單（v1.2.2）；供 server.mjs channel_send 防偽造使用
-export function _resolveRegsByTarget(db, target) {
+export function resolveRegsByTarget(db, target) {
     if (!target) return [];
     // 嘗試 agent_id（含多角色）
     const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
@@ -104,7 +104,7 @@ export async function listUnread(db, receiver, target) {
         }
     });
 
-    const regs = _resolveRegsByTarget(db, target);
+    const regs = resolveRegsByTarget(db, target);
 
     if (!receiver || receiver === 'all') {
         if (!regs || regs.length === 0) {

@@ -185,7 +185,7 @@ server.tool('channel_send',
     },
     async (args) => {
         // 由 target 解析 active 主角色作為 sender（防偽造）
-        const regs = channel._resolveRegsByTarget(db, args.target);
+        const regs = channel.resolveRegsByTarget(db, args.target);
         if (!regs || regs.length === 0) {
             return textJson({ success: false, reason: '403: target 解析不到任何活躍角色，禁止發送' });
         }
