@@ -239,13 +239,15 @@ export async function claimMessage(db, message_id, agent_id) {
 
 // v1.1.0 ackMessage / v1.2.2 去 Session 化：直查 DB 驗證 agent_id 活躍狀態且為搶鎖者
 export async function ackMessage(db, message_id, agent_id) {
-    if (!_isActiveAgent(db, agent_id)) {
-        return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
-    }
-
     return withRetry(() => {
         db.exec('BEGIN IMMEDIATE');
         try {
+            // 在 transaction 內驗證活躍狀態，消除 TOCTOU 視窗（I5 spec §4.4）
+            if (!_isActiveAgent(db, agent_id)) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
+            }
+
             const row = db.prepare(
                 `SELECT status, lock_owner FROM agent_collaboration_channel WHERE message_id = ?`
             ).get(message_id);
