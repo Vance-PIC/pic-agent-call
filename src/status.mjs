@@ -463,15 +463,22 @@ export function getAgentStatus(db, target) {
     const { statusLineFreshnessMin, historyPurgeMin } = readAgentSettings();
     const freshnessSec = statusLineFreshnessMin * 60;
 
-    // 超時掃描與歷史清理：同步執行確保呼叫方立即可見最新狀態
+    // 超時掃描與歷史清理：BEGIN IMMEDIATE 確保兩次 write 原子性，避免讀者看見中間狀態
     try {
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE status IN ('active','attached') AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
-        ).run();
-        db.prepare(
-            `DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || ? || ' minutes')`
-        ).run(historyPurgeMin);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            db.prepare(
+                `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                 WHERE status IN ('active','attached') AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
+            ).run();
+            db.prepare(
+                `DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || ? || ' minutes')`
+            ).run(historyPurgeMin);
+            db.exec('COMMIT');
+        } catch (innerErr) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw innerErr;
+        }
     } catch (err) {
         process.stderr.write(`[pic-agent-call] getAgentStatus: timeout sweep failed — ${err.message}\n`);
     }

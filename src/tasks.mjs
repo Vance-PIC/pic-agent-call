@@ -83,9 +83,10 @@ export async function listPendingTasks(db, assign_to) {
         }
     });
 
+    const COLS = 'task_id, feature, assign_to, payload, type, relay_to, status, created_at';
     const rows = assignTo
-        ? db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)
-        : db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' ORDER BY created_at ASC`).all();
+        ? db.prepare(`SELECT ${COLS} FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)
+        : db.prepare(`SELECT ${COLS} FROM tasks WHERE status='pending' ORDER BY created_at ASC`).all();
     return { tasks: rows, count: rows.length };
 }
 

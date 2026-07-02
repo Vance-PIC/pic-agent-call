@@ -23,7 +23,7 @@ function _isActiveAgent(db, agentId) {
 export function resolveRegsByTarget(db, target) {
     if (!target) return [];
     // 嘗試 agent_id（含多角色）
-    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 20);
     if (ids.length > 0) {
         const placeholders = ids.map(() => '?').join(',');
         const rows = db.prepare(
@@ -187,19 +187,19 @@ export async function listUnread(db, receiver, target) {
 // - agent_id 直查 DB 確認活躍（不比對 session_id）
 // - 訊息 receiver 須為該 agent_id / role? / 'any'
 export async function claimMessage(db, message_id, agent_id) {
-    // 直查 DB 確認 agent_id 活躍
-    if (!_isActiveAgent(db, agent_id)) {
-        return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
-    }
-
-    const agentRow = db.prepare(
-        `SELECT role FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`
-    ).get(agent_id);
-    const regs = agentRow ? [{ agent_id, role: agentRow.role }] : [];
-
     return withRetry(() => {
         db.exec('BEGIN IMMEDIATE');
         try {
+            // 在 transaction 內驗證活躍狀態，消除 TOCTOU 視窗
+            const agentRow = db.prepare(
+                `SELECT role FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`
+            ).get(agent_id);
+            if (!agentRow) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: `403: agent_id "${agent_id}" 未登記為活躍 Agent` };
+            }
+            const regs = [{ agent_id, role: agentRow.role }];
+
             const row = db.prepare(
                 `SELECT status, lock_owner, receiver FROM agent_collaboration_channel WHERE message_id = ?`
             ).get(message_id);
