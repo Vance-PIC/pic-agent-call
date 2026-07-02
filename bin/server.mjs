@@ -189,7 +189,10 @@ server.tool('channel_send',
         if (!regs || regs.length === 0) {
             return textJson({ success: false, reason: '403: target 解析不到任何活躍角色，禁止發送' });
         }
-        const activeReg = regs.find(r => r.status === 'active') ?? regs[0];
+        const activeReg = regs.find(r => r.status === 'active');
+        if (!activeReg) {
+            return textJson({ success: false, reason: '403: target 無 active 主角色，禁止發送' });
+        }
         const sender = activeReg.agent_id;
         return textJson(await channel.sendMessage(db, args.receiver, args.message, sender, args.priority));
     }

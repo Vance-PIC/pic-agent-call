@@ -196,7 +196,7 @@ export async function registerAgent(db, sessionId, agentId, role, forced = false
     const resolvedTermKey = target.trim();
     const parsed = _parseAgentIds(agentId, sessionId);
     if (!parsed) {
-        return { success: false, reason: 'agent_id_format_invalid' };
+        return { success: false, reason: 'invalid_agent_id_format' };
     }
 
     return withRetry(() => {
