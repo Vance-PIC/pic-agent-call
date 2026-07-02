@@ -183,13 +183,13 @@ export function initDatabase(dbPath, jsonPath) {
     // 注意：is_primary 欄位本身未物理移除（SQLite DROP COLUMN 有前提限制）
     // 欄位已廢棄不使用，DB 邏輯以 status='active'/'attached' 為準
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
-    // v1.2.2 NULL term_key 遷移：標 offline + fallback 為 legacy-{agent_id}，防 active unique 索引衝突
-    db.exec(`UPDATE agents SET status = 'offline', term_key = 'legacy-' || agent_id WHERE term_key IS NULL OR term_key = ''`);
     // v1.2.2 rebuild migration：若舊表 term_key 仍為 nullable，重建整張 agents 表以強制 NOT NULL
     {
         const colInfo = db.prepare(`PRAGMA table_info(agents)`).all();
         const termKeyCol = colInfo.find(c => c.name === 'term_key');
         if (termKeyCol && termKeyCol.notnull === 0) {
+            // NULL term_key 遷移僅在需要 rebuild 時執行（舊 DB 路徑）
+            db.exec(`UPDATE agents SET status = 'offline', term_key = 'legacy-' || agent_id WHERE term_key IS NULL OR term_key = ''`);
             db.exec(`BEGIN IMMEDIATE`);
             try {
                 db.exec(`CREATE TABLE new_agents (

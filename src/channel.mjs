@@ -2,12 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { withRetry } from './db.mjs';
 import { getRegistrations, getRegistrationsByTermKey } from './status.mjs';
 
+// 模組級快取：每個 db 實例的 prepared statements（以 db 物件為 key）
+const _stmtCache = new WeakMap();
+function _getStmts(db) {
+    if (!_stmtCache.has(db)) {
+        _stmtCache.set(db, {
+            isActive: db.prepare(`SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`),
+            insertMsg: db.prepare(`INSERT INTO agent_collaboration_channel (message_id, sender, receiver, priority, message) VALUES (?, ?, ?, ?, ?)`),
+        });
+    }
+    return _stmtCache.get(db);
+}
+
 // 內部：直查 DB 確認 agent_id 是否活躍（去 session 化，v1.2.2）
 function _isActiveAgent(db, agentId) {
-    const row = db.prepare(
-        `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached') LIMIT 1`
-    ).get(agentId);
-    return !!row;
+    return !!_getStmts(db).isActive.get(agentId);
 }
 
 // 多態解析 target → 活躍角色清單（v1.2.2）；供 server.mjs channel_send 防偽造使用
@@ -44,14 +53,15 @@ export async function sendMessage(db, receiver, message, sender, priority) {
     }
 
     const p = Number(priority) || 5;
-    const insertOne = (recv, msgId) => db.prepare(
-        `INSERT INTO agent_collaboration_channel (message_id, sender, receiver, priority, message) VALUES (?, ?, ?, ?, ?)`
-    ).run(msgId, sender, recv, p, message);
+    const { insertMsg } = _getStmts(db);
+    const insertOne = (recv, msgId) => insertMsg.run(msgId, sender, recv, p, message);
 
     if (receiver === 'all') {
         // 廣播：SELECT + INSERT 在同一 transaction，防止 agent 在兩者之間變更
-        const ids = [];
+        // ids 必須在 withRetry callback 內宣告，避免 retry 時重複累積
+        let ids = [];
         await withRetry(() => {
+            const localIds = [];
             db.exec('BEGIN IMMEDIATE');
             try {
                 const allAgents = db.prepare(
@@ -64,9 +74,10 @@ export async function sendMessage(db, receiver, message, sender, priority) {
                 for (const { agent_id } of allAgents) {
                     const msgId = `msg-${randomUUID()}`;
                     insertOne(agent_id, msgId);
-                    ids.push(msgId);
+                    localIds.push(msgId);
                 }
                 db.exec('COMMIT');
+                ids = localIds;
             } catch (err) {
                 try { db.exec('ROLLBACK'); } catch (_) {}
                 throw err;

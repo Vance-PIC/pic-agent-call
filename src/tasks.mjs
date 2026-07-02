@@ -139,7 +139,10 @@ export async function completeTask(db, task_id, result) {
                 `UPDATE tasks SET status='completed', result=?, completed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='claimed'`
             ).run(resultStr, task_id).changes;
             if (changes === 0) { db.exec('ROLLBACK'); return 'race'; }
+            // COMMIT 前讀取 completed_at，避免 COMMIT 後獨立 SELECT 有 race window
+            const saved = db.prepare('SELECT completed_at FROM tasks WHERE task_id = ?').get(task_id);
             db.exec('COMMIT');
+            completedAt = saved?.completed_at ?? null;
             return 'ok';
         } catch (err) {
             try { db.exec('ROLLBACK'); } catch (_) {}
@@ -148,7 +151,6 @@ export async function completeTask(db, task_id, result) {
     });
     if (success === 'not_found') return { success: false, task_id, reason: 'not_found' };
     if (success !== 'ok') return { success: false, task_id, reason: 'invalid_status', current_status: success };
-    completedAt = db.prepare('SELECT completed_at FROM tasks WHERE task_id = ?').get(task_id)?.completed_at;
     return { success: true, task_id, status: 'completed', completed_at: completedAt };
 }
 

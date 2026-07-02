@@ -472,7 +472,9 @@ export function getAgentStatus(db, target) {
         db.prepare(
             `DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || ? || ' minutes')`
         ).run(historyPurgeMin);
-    } catch (_) {}
+    } catch (err) {
+        process.stderr.write(`[pic-agent-call] getAgentStatus: timeout sweep failed — ${err.message}\n`);
+    }
 
     // 心跳降頻：10s 內不重複更新 last_seen（fire-and-forget，不阻塞 statusline 輸出）
     const lastRow = db.prepare(
@@ -486,7 +488,12 @@ export function getAgentStatus(db, target) {
                 db.prepare(
                     `UPDATE agents SET last_seen = datetime('now','localtime') WHERE session_id = ? AND status IN ('active','attached')`
                 ).run(resolvedSessionId);
-            } catch (_) {}
+            } catch (err) {
+                // DB 已關閉（test teardown / server shutdown）時靜默跳過，其他錯誤記錄
+                if (err.code !== 'ERR_INVALID_STATE' && !String(err.message).includes('database is not open')) {
+                    process.stderr.write(`[pic-agent-call] heartbeat update failed — ${err.message}\n`);
+                }
+            }
         });
     }
 

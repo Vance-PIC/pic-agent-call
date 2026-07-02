@@ -30,7 +30,7 @@ export async function addObservation(db, jsonPath, entityName, observationText) 
             throw err;
         }
     });
-    await withRetry(() => syncDbToJson(db, jsonPath));
+    syncDbToJson(db, jsonPath);
 }
 
 export function queryEntity(db, entityName) {
