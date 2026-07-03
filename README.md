@@ -4,7 +4,7 @@
 
 pic-agent-call provides a shared coordination layer for AI agents operating across different tools, terminals, sessions, and model providers.
 
-It gives agents persistent identity, shared project memory, communication channels, durable task coordination, and lifecycle awareness without forcing them into the same process, platform, or LLM ecosystem.
+It gives agents persistent identity, explicit terminal targeting, shared project memory, communication channels, durable task coordination, and lifecycle awareness without forcing them into the same process, platform, or LLM ecosystem.
 
 pic-agent-call is not an agent framework and does not replace model execution. It coordinates independent agents while preserving explicit ownership, recoverability, and human governance.
 
@@ -60,6 +60,8 @@ Agent identity survives individual sessions, terminal restarts, and model-provid
 
 An agent is not treated as a connection or chat session. The runtime can distinguish the stable participant from each temporary execution occurrence.
 
+Current 1.x specifications use an explicit `target` value to locate the relevant identity set. A target may resolve polymorphically to an `agent_id`, `term_key`, or `session_id`, with `term_key` acting as the preferred terminal-window isolation key for status, registration, channel reads, and unregister operations.
+
 ### Agent Lifecycle and Presence
 
 Agents have explicit lifecycle state:
@@ -70,17 +72,23 @@ Agents have explicit lifecycle state:
 
 The runtime prevents ambiguous active ownership in the same terminal context.
 
+The `register_agent` API requires `target`, and `unregister_agent` can mark a specific agent, terminal window, or session offline through the same target-resolution model.
+
 ### Communication Channels
 
 Agents can exchange durable, project-scoped messages through channels.
 
-Channels provide communication history, direct or shared coordination, correlation between calls and replies, and task-specific discussion.
+Channels provide communication history, direct or shared coordination, correlation between calls and replies, task-specific discussion, `any` first-claimer delivery, and `all` broadcast fan-out to active agents.
+
+Unread queries require an explicit `target`. If a caller also specifies a `receiver`, the runtime must verify that the receiver belongs to the active identities resolved from that target before returning messages.
 
 ### Durable Task Coordination
 
 Tasks are explicit coordination objects rather than responsibilities inferred from conversation.
 
 The runtime records task state, ownership, assignment, acceptance, completion, release, and abort semantics.
+
+Task claim authorization is based on the claiming `agent_id` being currently `active` or `attached`, not on an implicit session lookup.
 
 ### Shared Project Memory
 
@@ -98,6 +106,8 @@ The runtime distinguishes:
 - project workspace.
 
 This separation enables recovery, controlled handoff, and workspace collision awareness.
+
+The current runtime treats implicit session discovery as unsafe for multi-window operation. Status, registration, unread listing, and unregister flows must receive an explicit `target` from the caller.
 
 ### Human Governance
 
@@ -324,6 +334,7 @@ Lower-level specifications may refine the architecture but must not contradict i
 | `db-schema.md` | Persistence model and constraints |
 | `error-codes.md` | Runtime error semantics |
 | `SDD-Spec.md` | Software design and implementation contract |
+| `specs/multitenant_isolation/requirements.md` | v1.2.2 target-based multi-window isolation requirements |
 
 ---
 
@@ -342,6 +353,8 @@ A compatible implementation must preserve these invariants:
 9. Critical state transitions are persisted before success is acknowledged.
 10. Human-governed decisions cannot be silently overridden.
 11. Storage technology may change; coordination semantics may not.
+12. Status, registration, unread-listing, and unregister operations require explicit target-based identity resolution.
+13. Channel and task authorization must not depend on ambiguous background session discovery.
 
 ---
 
