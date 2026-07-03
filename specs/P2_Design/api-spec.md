@@ -212,7 +212,8 @@ export function getTask(
 export function resolveSessionId(callerType?: 'cc' | 'agy' | null): string
 
 // 以 session_id 查詢 agents 表中所有已註冊的活躍角色
-// 排序：status = 'active' DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
+// ⚠️ 商業邏輯排序（如 Channel 訊息主體、搶鎖等定位）：
+// status = 'active' DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
 // → 第一筆即為當前活躍的主角色
 export function getRegistrations(
   db: DatabaseSync,
@@ -227,10 +228,14 @@ export function getRegistration(
 
 // 以 term_key（PIC_TERM_KEY）查詢 agents 表中所有已註冊的活躍角色（v1.1.3 新增）
 // statusline 優先使用此函式識別當前視窗的活躍角色；找不到才 fallback 至 getRegistrations
+// ⚠️ 狀態列 No-Jitter 排序規則：
+// 為了防止角色切換主從時狀態列左右位置發生跳動 (Jitter)，狀態列獲取角色名單時，
+// 必須強制按建立時間排序：created_at ASC。
+// 主身份僅在其名稱前置加上 `▶` 標示，其左右排序順序始終保持固定不變。
 export function getRegistrationsByTermKey(
   db: DatabaseSync,
   termKey: string
-): Array<{ agent_id: string, role: string, session_id: string, term_key: string }>
+): Array<{ agent_id: string, role: string, session_id: string, term_key: string, status: 'active' | 'attached' | 'offline' }>
 
 // 用 agent_id 查詢 registration（給 statusline fallback 用）
 export function getRegistrationByAgentId(

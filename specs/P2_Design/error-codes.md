@@ -29,7 +29,7 @@
 | `forbidden` | `{ success: false }` 或 MCP `isError: true` | target 無效、越權讀取或越權 claim / ack | channel.mjs / server.mjs |
 | `storage_busy` | throw Error 或 normalized CLI error | SQLite busy / locked 經重試後仍失敗 | db.mjs / SQLite provider |
 | `migration_failed` | throw Error | schema migration 失敗，且非 duplicate column 類可忽略錯誤 | db.mjs |
-| `platform_env_unverified` | CLI normalized error | LLM command runner 路徑未驗證可繼承前台 terminal env | bin/register.mjs / hook |
+| `platform_env_unverified` | CLI normalized error | LLM command runner 路徑未驗證可繼承前台 terminal env | hook / platform adapter / conformance test |
 | `child_process_launch_failure` | CLI normalized error | 未來 foreground launcher 無法啟動 AI CLI child process | bin launcher, deferred |
 
 錯誤碼應簡量穩定；PG 不得自行新增未登錄 reason string。若需新增，必須同步更新本文件與對應測試。

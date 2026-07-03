@@ -284,11 +284,11 @@ SQLite Provider implementation
         1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 完成註冊，方可開始後續工作。
         2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent`完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
-        4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一 Graves target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一的 target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
         5.  **Option D Lite v2 前台 CLI 物理註冊適配器規格 (v1.2.2.1 補強)**：
             *   **前台短行程註冊 CLI (`bin/register.mjs`)**：
                 *   第一階段實作一個獨立的前台 Node.js CLI 註冊腳本 `bin/register.mjs`，使用者手動或 CLI 腳本呼叫格式為：`node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]`。它只作為前台 Registration Adapter，不包裹 Claude/Agy/Codex CLI 進程。
-                *   **環境捕獲與執行限制**：該 CLI 必須在可繼承目標 Terminal 前台環境中運行，以自動捕獲前台即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION` 作過視窗金鑰（`target`）。
+                *   **環境捕獲與執行限制**：該 CLI 必須在可繼承目標 Terminal 前台環境中運行，以自動捕獲前台即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION` 作為視窗金鑰（`target`）。
                 *   **零資料庫直連**：`register.mjs` **不得直接操作 SQLite，不得寫 agents table，且內部不得包含 any SQL 語句、transaction 交易控制或狀態轉移邏輯**。
                 *   **依賴共享註冊服務**：`register.mjs` 在組織好 `RegisterAgentCommand` 後，必須動態 `import` 並調用 `src/status.mjs` 共享的 `registerAgent()` 應用服務（Application Service）完成註冊。所有持久化必須經過 Storage Contract，由 SQLite Provider 實作，以確保整個系統僅存有唯一的一套商業註冊邏輯。
             *   **LLM 命令執行限制**：LLM Command Runner（背景/遠端執行器）在背景執行 `register.mjs` 不視為預設可信路徑，不得假設其子 shell 會自動繼承前台環境變數，除非該平台已物理驗證其繼承性。
@@ -320,7 +320,7 @@ SQLite Provider implementation
         *   `getAgentStatus` 回傳的 `unread` 為該 `sessionId` 綁定之所有活躍角色未讀數之總和。
         *   其 `display` 格式改為各角色個別並列顯示，以兩個空格區隔（不使用 `|` 符號）：所有活躍角色在狀態列中固定依註冊創建時間 (created_at ASC) 排列，不再將主角色移至首位；主身份僅在其角色名稱前置加上 `▶` 標示，其位置隨 active 角色狀態動態跳動以維持順序穩定 (No Jitter)（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`）。未讀數 >= 1 顯示為紅色 `🔴N·`，未讀數為 0 顯示為綠色 `🟢0·`。
     *   **通道 `all` 與 `any` 訊息機制**：
-        *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色 in `listUnread` 時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
+        *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色在 listUnread 查詢時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
         *   **`all` 信箱 (廣播)**：當發送端調用 `channel_send` 且指定 `receiver === 'all'` 時，`sendMessage` 內部應自動查詢 DB 中所有註冊且狀態為 `'active'` 的活躍角色（排除發送者 sender 本身），並為名單中的每個活躍 `agent_id` 各自寫入一筆獨立的未讀訊息紀錄，其 `receiver` 設為該 `agent_id`。
     *   **強制接管與孤兒訊息限制**（v1.1.4 強化）：
         *   `force: true` 的強行接管行為僅限於「相同 `agent_id` 被另一個不同 `session_id` 再次註冊」的衝突場景。此時只允許從資料庫中更新該特定 `agent_id` 的 `session_id` 與 `term_key` 綁定，嚴禁波及當前 DB 中該舊 Session 綁定的其他角色紀錄。
