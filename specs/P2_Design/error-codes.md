@@ -28,6 +28,11 @@
 - catch throw → 回傳 `{ isError: true, content: [{ type: 'text', text: err.message }] }`
 - DB init 失敗 → `process.exit(1)`
 
+**CLI 入口層**（bin/register.mjs）：
+- 註冊成功 → `process.exit(0)`
+- 註冊失敗或參數驗證不合法 → 輸出 Normalized Error 並以 `process.exit(1)` 退出
+
+
 ---
 
 ## MCP isError 回傳規則

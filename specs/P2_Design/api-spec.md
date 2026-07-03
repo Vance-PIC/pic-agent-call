@@ -290,3 +290,21 @@ export function registerAgent(
   timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
 ): Promise<{ success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }>
+
+---
+
+## bin/register.mjs (Option D Lite v2 前台註冊 CLI)
+
+前台短行程 CLI 註冊適配器，不直連 SQLite 執行 SQL，不直接寫 agents 表。
+
+```bash
+node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]
+```
+
+*   **職責與依賴**：
+    1.  **環境捕獲**：自當前前台環境安全讀取 `process.env.PIC_TERM_KEY` 與 `process.env.WT_SESSION` 作為 `target`。
+    2.  **核心依賴**：動態載入並調用 `src/status.mjs` 中的 `registerAgent()` 共享應用服務。
+    3.  **退出狀態**：
+        - 註冊成功：以 `process.exit(0)` 退出。
+        - 註冊失敗或參數驗證不合法：以 `process.exit(1)` 退出。
+
