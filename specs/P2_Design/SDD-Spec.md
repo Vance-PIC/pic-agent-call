@@ -202,7 +202,7 @@ pic-agent-call/
         1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 註冊（如 `CC-PG1` 或 `AGY-SA`）。
         2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
-        4.  **Hook 強制等級**：`autoreg-gate` hook 採 **`block`**（v1.1.3 已升級，從 warn 改為 block）。block 訊息含診斷資訊（session prefix、PIC_TERM_KEY prefix）與 `register_agent` 呼叫範例，協助 AI 快速定位並完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一的 target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
     *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
     *   API 內部執行安全性校驗與接收信箱判定：
