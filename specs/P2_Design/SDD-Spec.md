@@ -203,9 +203,15 @@ pic-agent-call/
         2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
         4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一的 target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
-        5.  **本地 Session 鍵值對照表與自動對齊規格 (v1.2.2.1 補強)**：
-            *   **前端 Hook 寫入對照表**：`UserPromptSubmit` hook 腳本在攔截到 `register agent` 註冊指令時，應自動讀取當前前台視窗即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION`，並將其與當前會話 `session_id` 的對照關係（格式：`{ "session_id": "term_key" }`）追加寫入至專案本地的快取設定檔 `.memory/session_keys.json` 中。
-            *   **背景 API 自動對齊**：`registerAgent` 核心 API 之 `target` 參數依然保持**強制必填且非空**的安全性約束。當 AI 在呼叫註冊且參數 `target` 傳入特殊關鍵字 `"process.env.PIC_TERM_KEY"` 或 `"AUTO"` 時，API 應讀取 `.memory/session_keys.json`，以當前會話 `session_id` 查出對應的 `term_key` 值寫入資料庫，以在不污染防線的前提下，實現跨平台、無負擔的多視窗自動狀態列對齊。
+        5.  **Option D Lite v2 前台 CLI 物理註冊適配器規格 (v1.2.2.1 補強)**：
+            *   **前台短行程註冊 CLI (`bin/register.mjs`)**：
+                *   第一階段實作一個獨立的前台 Node.js CLI 註冊腳本 `bin/register.mjs`，使用者手動或 CLI 腳本呼叫格式為：`node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]`。它只作為前台 Registration Adapter，不包裹 Claude/Agy/Codex CLI 進程。
+                *   **環境捕獲與執行限制**：該 CLI 必須在可繼承目標 Terminal 前台環境中運行，以自動捕獲前台即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION` 作為視窗金鑰（`target`）。
+                *   **零資料庫直連**：`register.mjs` **不得直接操作 SQLite，不得寫 agents table，且內部不得包含任何 SQL 語句、transaction 交易控制或狀態轉移邏輯**。
+                *   **依賴共享註冊服務**：`register.mjs` 在組織好 `RegisterAgentCommand` 後，必須動態 `import` 並調用 `src/status.mjs` 共享的 `registerAgent()` 應用服務（Application Service）完成註冊。所有持久化必須經過 Storage Contract，由 SQLite Provider 實作，以確保整個系統僅存有唯一的一套商業註冊邏輯。
+            *   **LLM 命令執行限制**：LLM Command Runner（背景/遠端執行器）在背景執行 `register.mjs` 不視為預設可信路徑，除非該平台已物理驗證其背景子 shell 能 100% 繼承到正確的前台 Terminal environment。
+            *   **前端 Hook 與引導防線**：`UserPromptSubmit` hook 腳本 (`pic-agent-autoreg-gate.js`) 依然保持純唯讀防守，當 status 檢查 `registered: false` 時攔截放行，並在終端機輸出診斷資訊與執行引導，指示使用者在前台執行 `node bin/register.mjs` 完成註冊。
+            *   **延遲實作範圍**：完整進程包裹的 Foreground Launcher (`pic-agent start`)、心跳機制 (heartbeat)、租期機制 (lease)、以及 Local IPC 通訊機制全部延後至後續階段。
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
     *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
     *   API 內部執行安全性校驗與接收信箱判定：
