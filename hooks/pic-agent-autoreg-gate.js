@@ -76,8 +76,8 @@ async function main() {
             message: `[AUTO-REG] 找不到已登記的 Agent 角色。\n` +
                 `診斷：${idHint}，${wtHint}\n` +
                 `原因：此 session 在 DB 中無對應 session_id 也無對應 term_key。\n` +
-                `修復：請呼叫 register_agent，重新註冊角色(可多重)。\n` +
-                `範例：register_agent CC-PG1+CC-QA1`,
+                `修復：請在前台終端機執行 register.mjs 完成登記(可多重角色)。\n` +
+                `範例：node bin/register.mjs CC-PG1+CC-QA1 --force`,
         }) + '\n');
         process.exit(0);
     } catch (_) {
