@@ -212,8 +212,8 @@ export function getTask(
 export function resolveSessionId(callerType?: 'cc' | 'agy' | null): string
 
 // 以 session_id 查詢 agents 表中所有已註冊的活躍角色
-// 排序：is_primary DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
-// → 第一筆即為「主角色」（is_primary = 1）
+// 排序：created_at ASC 固定排序以避免狀態列 jitter；`status = active` 的角色以 `▶` 標示，但不依 active 狀態改變實體排序。
+// active/attached/offline 三態取代舊 is_primary 欄位
 export function getRegistrations(
   db: DatabaseSync,
   sessionId: string
@@ -275,7 +275,7 @@ export function handleOrphanedMessages(
 //   1. 僅更新已被其他 session 占用的 agent_id 的 session_id 與 term_key 綁定，不影響舊 session 的其他角色。
 //   2. **孤兒訊息精準判定**：只有當被強奪的 agent 原本綁定的 `term_key` 與當前傳入的 `termKey` **不同（跨 Terminal 視窗奪取）**時，
 //      才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若 `term_key` 相同（同視窗換 session 重新登記路徑），則保留訊息不予孤兒化。
-//   3. **主角色指定**：將被 force 的 agent 設為 `status = 'active'`，同 session / term scope 內其他角色設為 `status = 'attached'`。
+//      3. **主角色指定**：將被 force 的 agent 設為 `status = 'active'`，同 session / term scope 內其他角色設為 `status = 'attached'`。
 //      狀態列中角色順序固定依據註冊創建時間排序（created_at ASC），不隨主角色切換而位移。
 // - 回傳註冊結果清單，含 forced 與 term_key 欄位。
 export function registerAgent(
@@ -308,3 +308,4 @@ node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]
     3.  **退出狀態**：
         - 註冊成功：以 `process.exit(0)` 退出。
         - 註冊失敗或參數驗證不合法：以 `process.exit(1)` 退出。
+

@@ -32,7 +32,7 @@
 | `platform_env_unverified` | CLI normalized error | LLM command runner 路徑未驗證可繼承前台 terminal env | bin/register.mjs / hook |
 | `child_process_launch_failure` | CLI normalized error | 未來 foreground launcher 無法啟動 AI CLI child process | bin launcher, deferred |
 
-錯誤碼應簡量穩定；PG 不得自行新增未登錄 reason string。若需新增，必須同步更新本文件與對應測試。
+錯誤碼應盡量穩定；PG 不得自行新增未登錄 reason string。若需新增，必須同步更新本文件與對應測試。
 
 
 ---
