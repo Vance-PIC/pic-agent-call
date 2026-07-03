@@ -203,6 +203,9 @@ pic-agent-call/
         2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
         4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一的 target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        5.  **本地 Session 鍵值對照表與自動對齊規格 (v1.2.2.1 補強)**：
+            *   **前端 Hook 寫入對照表**：`UserPromptSubmit` hook 腳本在攔截到 `register agent` 註冊指令時，應自動讀取當前前台視窗即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION`，並將其與當前會話 `session_id` 的對照關係（格式：`{ "session_id": "term_key" }`）追加寫入至專案本地的快取設定檔 `.memory/session_keys.json` 中。
+            *   **背景 API 自動對齊**：`registerAgent` 核心 API 之 `target` 參數依然保持**強制必填且非空**的安全性約束。當 AI 在呼叫註冊且參數 `target` 傳入特殊關鍵字 `"process.env.PIC_TERM_KEY"` 或 `"AUTO"` 時，API 應讀取 `.memory/session_keys.json`，以當前會話 `session_id` 查出對應的 `term_key` 值寫入資料庫，以在不污染防線的前提下，實現跨平台、無負擔的多視窗自動狀態列對齊。
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
     *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
     *   API 內部執行安全性校驗與接收信箱判定：
