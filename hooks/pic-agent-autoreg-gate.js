@@ -64,7 +64,7 @@ async function main() {
         const sessionId = resolveSessionId('cc');
         const target   = termKey || sessionId;
 
-        const result = await getAgentStatus(db, target);
+        const result = getAgentStatus(db, target);
         db.close();
 
         if (result.registered) process.exit(0);
