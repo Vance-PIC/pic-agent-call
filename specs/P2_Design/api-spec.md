@@ -212,8 +212,8 @@ export function getTask(
 export function resolveSessionId(callerType?: 'cc' | 'agy' | null): string
 
 // 以 session_id 查詢 agents 表中所有已註冊的活躍角色
-// 排序：is_primary DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
-// → 第一筆即為「主角色」（is_primary = 1）
+// 排序：status = 'active' DESC（主角色排首）， updated_at DESC（最後活躍）， created_at ASC（同時登記依輸入順序）
+// → 第一筆即為當前活躍的主角色
 export function getRegistrations(
   db: DatabaseSync,
   sessionId: string
