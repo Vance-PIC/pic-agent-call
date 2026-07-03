@@ -59,8 +59,8 @@ async function main() {
     }
 
     try {
-        // target 多態定位：PIC_TERM_KEY → WT_SESSION → session_id（與 resolveRegsByTarget 相同優先序）
-        const termKey  = process.env.PIC_TERM_KEY || process.env.WT_SESSION || null;
+        // target 多態定位：PIC_TERM_KEY → session_id（與 agent-statusline.mjs 相同優先序）
+        const termKey  = process.env.PIC_TERM_KEY || null;
         const sessionId = resolveSessionId('cc');
         const target   = termKey || sessionId;
 
