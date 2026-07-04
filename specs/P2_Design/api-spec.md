@@ -1,4 +1,4 @@
-# API Spec (L2) — pic-agent-call v1.3.0
+# API Spec (L2) — pic-agent-call v1.3.1
 
 ---
 
@@ -112,9 +112,11 @@ export function sendMessage(
 ): { message_id: string, status: 'UNREAD' }
 
 // 列出未讀（自動釋放 IN_PROGRESS > 15 分鐘 → UNREAD）
-// ⚠️ v1.1.0 安全強化 / v1.2.2 優化：執行橫向越權檢驗與多態未讀查詢。
+// ⚠️ v1.1.0 安全強化 / v1.2.2 優化 / v1.3.1 平台池與自排除：
 // - 增加必填參數 target (string)，移除對 sessionId 的依賴。
 // - 內部以 target 執行多態解析獲取活躍角色，若指定了 receiver 則必須確認該 receiver 包含在該名單中，否則拋出 403。
+// - 支援平台池支援 (v1.3.1)：從活躍 agent_id 提取平台前綴（如 `CC` 或 `AGY`），自動將 `platform?` 納入查詢聯集。
+// - 支援發送者自排除 (v1.3.1)：結果中 MUST 自動排除 `sender` 為當前 `target` 關聯之活躍角色群（`regs.agent_id`）的訊息，防止看見自己發送的 any、role? 或 platform? 訊息。
 export function listUnread(
   db: DatabaseSync,
   receiver: string | null,

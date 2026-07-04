@@ -1,4 +1,4 @@
-# SDD-Spec (L1) — pic-agent-call v1.3.0
+# SDD-Spec (L1) — pic-agent-call v1.3.1
 
 ## 1. 專案概述
 
@@ -170,7 +170,7 @@ pic-agent-call/
    - 對這批活躍角色執行 heartbeats 更新（將其 `last_seen` 更新為當前時間）。
    - 撈取這批角色的未讀訊息聯集並計算總數，回傳狀態列所需要的 display 文字與燈號（狀態列 wrapper 腳本在背景呼叫時，必須帶入 `target=$env:PIC_TERM_KEY`）。
 
-#### channel_list_unread 多態未讀查詢（v1.2.2 優化）
+#### channel_list_unread 多態未讀查詢（v1.2.2 優化 / v1.3.1 平台池與發送者自排除）
 
 1. **輸入參數**：
    - `target` (string, **Required**) — 查詢定位標的。
@@ -178,7 +178,9 @@ pic-agent-call/
 2. **多態與安全規則**：
    - 內部先以 `target` 進行多態解析獲取當前活躍角色名單。
    - **安全隔離卡控**：若傳入了 `receiver` 參數，則必須驗證該 `receiver` 包含在上述解析出的活躍名單中，否則拋出 `403 Forbidden`，防止跨視窗非法拉取他人信箱。
-   - 以名單內所有角色的 `agent_id` 及其 `role?` 郵箱，撈取未讀訊息聯集。
+   - **平台池 (Platform Pool) 支援 (v1.3.1 新增)**：除了原有的 `agent_id` 與 `role?` 角色池之外，新增平台池支援（例如 `CC?`, `AGY?`）。系統必須提取活躍角色的前綴（即 `agent_id` 以 `-` 分割之首項，如 `CC` 或 `AGY`），將 `platform?` 自動納入查詢聯集。
+   - **發送者自排除 (Sender Self-Exclusion) (v1.3.1 新增)**：為防止發送者在自己的收件匣中看到自己發送的訊息（特別是 `any`、`role?` 或 `platform?` 任務），在查詢未讀時，**MUST** 自動排除 `sender` 包含在當前 `target` 關聯的活躍角色群（`regs.agent_id`）中的訊息。
+   - 以名單內所有角色的 `agent_id`、`role?` 及 `platform?` 郵箱，撈取排除自發送後的未讀訊息聯集。
 
 #### 協作與任務 API 去 Session 化安全直查（v1.2.2 重構）
 

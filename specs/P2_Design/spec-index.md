@@ -1,4 +1,4 @@
-# Specification Index — pic-agent-call v1.3.0
+# Specification Index — pic-agent-call v1.3.1
 
 ## Specification Levels
 
@@ -32,6 +32,7 @@
 - **(v1.3.0)** The `register_agent` MCP handler MUST resolve `term_key` exclusively from trusted process environment (`PIC_TERM_KEY` preferred, `WT_SESSION` as fallback); both absent MUST result in `term_key_unavailable` rejection.
 - **(v1.3.0)** AI-supplied `target` MUST NOT be used as `term_key` except under an explicit opt-in emergency/debug mechanism (default off); any such debug use MUST emit a warning and is not permitted in production.
 - **(v1.3.0)** Terminal shell setup MUST define `PIC_TERM_KEY_SCOPE` (vscode, windows-terminal, generic-shell) and regenerate `PIC_TERM_KEY` when scope mismatch is detected (e.g., VS Code integrated terminal inherits WT env) to enforce terminal isolation.
+- **(v1.3.1)** Channel listUnread MUST automatically exclude messages sent by any active agents under the current session (sender self-exclusion) and MUST support platform-wide pools (e.g., `CC?`, `AGY?` resolved from agent_id prefix) to ensure clean routing and role/platform-based collaboration.
 
 ## Current Tool Count
 
