@@ -78,7 +78,7 @@ Runtime 會避免同一個 Terminal Context 出現模糊的 Active Ownership。
 
 Agent 可以透過 Channel 交換 Durable、Project-scoped Message。
 
-Channel 提供 Communication History、Direct 或 Shared Coordination、Call 與 Reply 的 Correlation、Task-specific Discussion、`any` 先搶先得信箱，以及對 Active Agent 的 `all` Broadcast Fan-out。
+Channel 提供 Communication History、Direct 或 Shared Coordination、Call 與 Reply 的 Correlation、Task-specific Discussion、`any` 先搶先得信箱、角色池 (例如 `PG?`) 與平台池 (例如 `CC?`) 信箱，以及對 Active Agent 的 `all` Broadcast Fan-out（並自動執行發送者自排除）。
 
 未讀查詢必須傳入明確 `target`。若 Caller 同時指定 `receiver`，Runtime 必須確認該 Receiver 屬於由該 Target 解析出的 Active Identity 名單，才能回傳訊息。
 

@@ -78,7 +78,7 @@ The `register_agent` API requires `target`, and `unregister_agent` can mark a sp
 
 Agents can exchange durable, project-scoped messages through channels.
 
-Channels provide communication history, direct or shared coordination, correlation between calls and replies, task-specific discussion, `any` first-claimer delivery, and `all` broadcast fan-out to active agents.
+Channels provide communication history, direct or shared coordination, correlation between calls and replies, task-specific discussion, `any` first-claimer delivery, role pools (e.g., `PG?`), platform pools (e.g., `CC?`), and `all` broadcast fan-out to active agents (with automatic sender self-exclusion).
 
 Unread queries require an explicit `target`. If a caller also specifies a `receiver`, the runtime must verify that the receiver belongs to the active identities resolved from that target before returning messages.
 
