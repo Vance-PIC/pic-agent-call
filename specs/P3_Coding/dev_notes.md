@@ -91,3 +91,36 @@ scripts/approve-phase.ps1 -Feature feat-agent-multitenant-isolation -Phase P3
 📂 Evidence：evidence/v1.3.0-trusted-term-key-test-pass.log
 ✅ 144/144 tests pass
 ```
+
+---
+
+## v1.3.0 PIC_TERM_KEY_SCOPE 隔離合約（頻道派工，非正式 task-broker task）
+
+> [!NOTE]
+> 🤖 **[交接上下文：P3 Coding ➔ P4 FunctionTest / QA]**
+>
+> - **規格**：SDD-Spec.md §8（v1.3.0 隔離優化）、spec-index.md
+> - **驗證方式**：無 Jest 覆蓋（純 PowerShell profile script），改用隔離環境跑 6 個狀態轉移情境驗證邏輯，不觸碰使用者真實 `$PROFILE`
+> - **Evidence**：`evidence/v1.3.0-term-key-scope-isolation-test.log`（6/6 match）
+
+### 實作摘要
+
+修改 `scripts/setup-terminal-key.ps1` 注入 profile 的 snippet：
+1. 新增 `PIC_TERM_KEY_SCOPE`（`vscode` / `windows-terminal` / `generic-shell`），由 `$env:TERM_PROGRAM -eq "vscode"` → `$env:WT_SESSION` 存在（Windows Terminal 內建變數，僅讀取偵測用途，不主動寫入）→ 皆非則 `generic-shell` 依序判定當前 Shell 類型。
+2. 單一條件涵蓋規格 5 列狀態轉移表：`PIC_TERM_KEY` 缺失 **或** `PIC_TERM_KEY_SCOPE` 與當前 Shell 類型不符 → 重新生成 UUID 並更新 scope；否則沿用既有值。
+3. 徹底移除對 `WT_SESSION` 的主動寫入（原本 VS Code 分支會硬寫 `$env:WT_SESSION`，已刪除）。
+
+### 驗證結果（6 case，全數符合預期）
+
+| Row | 情境 | 結果 |
+|---|---|---|
+| 1 | 任何環境缺失+缺失 | 生成新 UUID，scope=偵測值 ✓ |
+| 2 | VS Code，存在，scope=vscode | 保留原值 ✓ |
+| 3 | VS Code，存在，scope=windows-terminal（繼承自 WT 的 `code .`） | 重新生成 + scope 改 vscode ✓ |
+| 4 | Windows Terminal，存在，scope=windows-terminal | 保留原值 ✓ |
+| 5 | generic-shell，存在，scope=generic-shell | 保留原值 ✓ |
+| 6 | 執行後檢查 `WT_SESSION` | 為空，確認不再主動寫入 ✓ |
+
+### 相依套件
+
+無新增套件。

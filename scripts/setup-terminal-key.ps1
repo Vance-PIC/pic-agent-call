@@ -1,22 +1,19 @@
 # setup-terminal-key.ps1
-# 確保每個 terminal 視窗都有唯一識別碼（WT_SESSION / PIC_TERM_KEY）
-# 適用於非 Windows Terminal 環境（VS Code terminal、standalone PowerShell 等）
+# 確保每個 terminal 視窗都有唯一識別碼（PIC_TERM_KEY + PIC_TERM_KEY_SCOPE）
+# v1.3.0 金鑰隔離設計合約（SDD-Spec.md §8）：
+#   - PIC_TERM_KEY_SCOPE 與當前 Shell 類型一致 → 沿用既有 PIC_TERM_KEY（防同分頁子行程重生）
+#   - 不一致（如 VS Code 整合終端機繼承自 WT 啟動的 `code .`）→ 重新生成並更新 scope（防跨 Shell 類型污染）
+#   - 徹底廢止對 WT_SESSION 環境變數的主動寫入
 
 $snippet = @'
 
-# pic-agent-call: terminal identity key
-# 若在 VS Code 整合終端機下，強制每次生成新 UUID 以防繼承互蓋；非 VS Code 則在不存在時補上
-if ($env:TERM_PROGRAM -eq "vscode") {
-    $env:WT_SESSION = [System.Guid]::NewGuid().ToString()
-    $env:PIC_TERM_KEY = $env:WT_SESSION
-} else {
-    if (-not $env:WT_SESSION) {
-        $env:WT_SESSION = [System.Guid]::NewGuid().ToString()
-    }
-    if (-not $env:PIC_TERM_KEY) {
-        $env:PIC_TERM_KEY = $env:WT_SESSION
-    }
+# pic-agent-call: terminal identity key (v1.3.0 scope isolation)
+$__picCurrentScope = if ($env:TERM_PROGRAM -eq "vscode") { "vscode" } elseif ($env:WT_SESSION) { "windows-terminal" } else { "generic-shell" }
+if ((-not $env:PIC_TERM_KEY) -or ($env:PIC_TERM_KEY_SCOPE -ne $__picCurrentScope)) {
+    $env:PIC_TERM_KEY = [System.Guid]::NewGuid().ToString()
+    $env:PIC_TERM_KEY_SCOPE = $__picCurrentScope
 }
+Remove-Variable -Name __picCurrentScope -ErrorAction SilentlyContinue
 '@
 
 $profilePath = $PROFILE
