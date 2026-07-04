@@ -31,16 +31,8 @@ const getMetadata = () => new Promise((resolve) => {
 
 const stdinData = await getMetadata();
 
-// 從 env 讀取，若無則嘗試從 stdinData JSON 解析（Antigravity CLI 會將 metadata 傳入 stdin）
-let convId = process.env.ANTIGRAVITY_CONVERSATION_ID ?? '';
-if (!convId && stdinData) {
-  try {
-    const meta = JSON.parse(stdinData);
-    if (meta && meta.conversation_id) {
-      convId = meta.conversation_id;
-    }
-  } catch (_) {}
-}
+// 從 env 直接讀取，不依賴 stdin（AGY CLI 不關閉 stdin，會導致掛起）
+const convId = process.env.ANTIGRAVITY_CONVERSATION_ID ?? '';
 const cwd = process.env.PWD ?? process.cwd();
 const bin = path.join(__dirname, 'agent-statusline.mjs');
 const quotaScript = path.join(homedir(), '.gemini', 'antigravity-cli', 'plugins', 'antigravity-cli-statusline', 'scripts', 'statusline-quota.mjs');
