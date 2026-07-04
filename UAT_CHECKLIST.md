@@ -1,29 +1,39 @@
-# UAT Checklist — pic-agent-call (Three-State & Heartbeat Optimizations)
+# UAT Checklist — pic-agent-call v1.3.1 (Trusted term_key & Platform Collaboration)
 
 * **核准角色**：`USER (Human-in-the-Loop)`
 * **執行角色**：`AGY-QA` (QA)
-* **執行狀態**：`100% PASSED`
-* **物理證據路徑**：[evidence/uat_test_pass.log](file:///C:/PIC/AI-tools/claude-marketplace/pic-agent-call/evidence/uat_test_pass.log)
+* **執行狀態**：`PENDING` (待驗收)
+* **物理證據路徑**：[evidence/uat_v1.3.1_pass.log](file:///C:/PIC/AI-tools/claude-marketplace/pic-agent-call/evidence/uat_v1.3.1_pass.log)
 
 ---
 
-## 1. 核心功能驗收項目
+## 1. v1.3.0 核心安全與隔離驗收項目
 
-- [x] **三態活躍角色模型 (Three-State Model)**
-  - *驗收結果*：狀態列成功並存顯示多個掛載角色（`active/attached`）。無權角色嘗試讀取信件時被 403 阻斷，主角色能正常讀取。
-- [x] **10 秒心跳降頻與非同步背景更新**
-  - *驗收結果*：`getAgentStatus` 在 10 秒內重複調用時直接略過 DB 寫入操作。超過 10 秒的心跳更新改以 `setImmediate` 背景非同步寫入，主線程完全無阻塞。
-- [x] **多角色註冊主從切換 (Active 鎖定釋放)**
-  - *驗收結果*：重設主從角色順序時，在迴圈開始前自動降級該 session_id 下的所有活躍角色為 `attached`，徹底解決 `idx_agents_term_active` 唯一索引衝突。
-- [x] **向上遞迴尋根防分裂**
-  - *驗收結果*：`resolveMemoryPaths` 成功向上遞迴查找專案根目錄，不再產生分裂子庫。
-- [x] **自訂 settings.json 分鐘參數**
-  - *驗收結果*：讀取 `settings.json` 中配置的 `agentTimeoutMin`、`statusLineFreshnessMin`、`historyPurgeMin` 參數並精確套用於對應的超時、黃燈與過期清理邏輯。
+- [ ] **Trusted term_key 安全防護**
+  - *測試場景*：環境變數具備 `PIC_TERM_KEY` 時，`register_agent` 成功寫入該 key 且忽略傳入的 target 參數。
+  - *測試場景*：環境變數均缺失且未開啟 debug flag 時，`register_agent` 拒絕並回傳 `term_key_unavailable` 錯誤與 diagnostics 診斷欄位。
+  - *測試場景*：開啟 `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 時，允許以 target 作為 fallback 並於 stderr 輸出警告。
+- [ ] **狀態列金鑰回歸與同源匹配**
+  - *測試場景*：`agent-statusline.mjs` 正常以 `PIC_TERM_KEY` 或 `resolveSessionId` 查詢 DB。當與 register_agent 同源時，狀態列正確印出角色狀態與未讀數。
+- [ ] **PowerShell Profile 金鑰 Scope 隔離**
+  - *測試場景*：執行 `setup-terminal-key.ps1` 後，PowerShell 啟動時自動分配 Scope。
+  - *測試場景*：VS Code 整合終端機繼承自 Windows Terminal 污染的 `PIC_TERM_KEY_SCOPE` 時，自動重新生成新的 `PIC_TERM_KEY` 並更新 Scope 為 `vscode`（防跨 shell 類型污染）。
+  - *測試場景*：一般 nested shell 或 `run_command` 繼承相同 Scope 時，保留金鑰不重複生成。
+  - *測試場景*：確認 Profile 腳本不再對 `WT_SESSION` 進行任何主動寫入。
 
 ---
 
-## 2. DoD 核對表
+## 2. v1.3.1 平台協作與自排除驗收項目
 
-- [x] **規格服從**：所有欄位與 API 設計 100% 遵守 L2 `api-spec.md` 與 `db-schema.md`。
-- [x] **單元測試**：136/136 單元測試 PASS。
-- [x] **物理證據**：`evidence/uat_test_pass.log` 存在且完整。
+- [ ] **平台池 (Platform Pool) 支援**
+  - *測試場景*：向 `CC?` 發送訊息，屬於 CC 平台（如 `CC-PG1`、`CC-QA1`）的活躍角色在查詢 `listUnread` 時能正常看到，而 AGY 平台角色（如 `AGY-SA`）則看不見。
+- [ ] **發送者自排除 (Sender Self-Exclusion)**
+  - *測試場景*：向 `any`、`role?` 或 `platform?` 發送訊息後，發送者（例如 `AGY-SA`）在查詢未讀訊息聯集時，結果中自動過濾掉自己所發送的這筆訊息，但其他合格接收者依然看得到。
+
+---
+
+## 3. DoD 核對表
+
+- [ ] **規格服從**：所有實作 (status.mjs, server.mjs, channel.mjs, setup-terminal-key.ps1) 100% 符合 `SDD-Spec.md` v1.3.1 與 `api-spec.md` v1.3.1 規格。
+- [ ] **單元測試**：執行 `npm run test`，所有單元測試 PASS（覆蓋率與新增測試覆蓋符合要求）。
+- [ ] **物理證據**：`evidence/` 目錄下的測試報告與日誌檔案完整無缺。
