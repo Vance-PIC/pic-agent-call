@@ -1,4 +1,4 @@
-# Error Codes (L2) — pic-agent-call v1.2.2 RC Cleanup
+# Error Codes (L2) — pic-agent-call v1.3.0
 
 ---
 
@@ -31,6 +31,7 @@
 | `migration_failed` | throw Error | schema migration 失敗，且非 duplicate column 類可忽略錯誤 | db.mjs |
 | `platform_env_unverified` | CLI normalized error | LLM command runner 路徑未驗證可繼承前台 terminal env | hook / platform adapter / conformance test |
 | `child_process_launch_failure` | CLI normalized error | 未來 foreground launcher 無法啟動 AI CLI child process | bin launcher, deferred |
+| `term_key_unavailable` | `{ success: false, reason, diagnostics }` | `register_agent` 無法從 trusted env（`PIC_TERM_KEY` / `WT_SESSION`）取得 term_key；`diagnostics` 包含 `has_pic_term_key`, `has_wt_session`, `target_received` | server.mjs |
 
 錯誤碼應簡量穩定；PG 不得自行新增未登錄 reason string。若需新增，必須同步更新本文件與對應測試。
 

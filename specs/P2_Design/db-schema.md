@@ -1,4 +1,4 @@
-# DB Schema (L2) — pic-agent-call v1.2.2 RC Cleanup
+# DB Schema (L2) — pic-agent-call v1.3.0
 
 沿用 `agent-call` 現有 schema，透過自動 migration 降低升級成本。
 DB 初始化由 `src/db.mjs initDatabase()` 負責。

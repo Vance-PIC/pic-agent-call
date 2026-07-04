@@ -1,4 +1,4 @@
-# API Spec (L2) — pic-agent-call v1.2.2 RC Cleanup
+# API Spec (L2) — pic-agent-call v1.3.0
 
 ---
 
@@ -269,33 +269,42 @@ export function handleOrphanedMessages(
   newAgentId: string
 ): Promise<number>
 // Upsert agent registration
-// ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線：
+// ⚠️ v1.1.0 支援多重角色 / v1.1.3 term_key 三道防線 / v1.3.0 term_key 自動解析：
 // - 參數 agentId 與 role 可接受逗號（半形 , 或全形 ，）、頓號（、）、分號（; 或 ；）、斜線（/）、加號（+）或空格等分隔的多個字串。
 // - 系統內部使用正規表達式 `/[,\/\\+，、；;\s]+/` 分割為多個角色，各自執行三道防線 upsert 邏輯：
-//   - 一道：session_id 命中 DB → UPDATE agents SET term_key = PIC_TERM_KEY（resume 換視窗）
-//   - 二道：term_key（PIC_TERM_KEY）命中 DB → UPDATE agents SET session_id = <new_session_id>（同視窗新 session）
+//   - 一道：session_id 命中 DB → UPDATE agents SET term_key = resolvedTermKey（resume 換視窗）
+//   - 二道：resolvedTermKey 命中 DB → UPDATE agents SET session_id = <new_session_id>（同視窗新 session）
 //   - 三道：兩者均不命中 → 若無 force，拋出 conflict 錯誤含診斷資訊
 // - 平台前綴補全：不含 AGY-/CC- 前綴的角色代碼自動根據 session_id 類型補全。
 // - forced=true 時強制接管：
 //   1. 僅更新已被其他 session 占用的 agent_id 的 session_id 與 term_key 綁定，不影響舊 session 的其他角色。
-//   2. **孤兒訊息精準判定**：只有當被強奪的 agent 原本綁定的 `term_key` 與當前傳入的 `termKey` **不同（跨 Terminal 視窗奪取）**時，
+//   2. **孤兒訊息精準判定**：只有當被強奪的 agent 原本綁定的 `term_key` 與當前傳入的 `resolvedTermKey` **不同（跨 Terminal 視窗奪取）**時，
 //      才將其 UNREAD 訊息孤兒化（ORPHANED）並通知發送者；若 `term_key` 相同（同視窗換 session 重新登記路徑），則保留訊息不予孤兒化。
 //   3. **主角色指定**：將被 force 的 agent 設為 `status = 'active'`，同 session / term scope 內其他角色設為 `status = 'attached'`。
 //      狀態列中角色順序固定依據註冊創建時間排序（created_at ASC），不隨主角色切換而位移。
 // - 回傳註冊結果清單，含 forced 與 term_key 欄位。
+//
+// ⚠️ v1.3.0 term_key 解析規則（跨 CLI 通用）：
+// `registerAgent` 函式本身接受 `target` 作為 term_key 參數；但呼叫端（server.mjs MCP handler）
+// 必須在呼叫前先解析 resolvedTermKey：
+//   resolvedTermKey = process.env.PIC_TERM_KEY || process.env.WT_SESSION
+//   兩者均缺失→拒絕（term_key_unavailable）；僅 PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1 時才允許 debug fallback。
+// 原因：MCP server 為 CLI 子行程，process.env.PIC_TERM_KEY 天然繼承視窗注入 UUID，
+// 與 agent-statusline.mjs 同源一致；AI 透過 run_command 抓取的 PIC_TERM_KEY 為另一新 spawn 的 shell，不可信任。
+// 此規則對 AGY CLI、Claude Code、及任何以子行程方式啟動 MCP server 的 CLI 平台皆通用。
 export function registerAgent(
   db: DatabaseSync,
   sessionId: string,
   agentId: string,
   role?: string,
   forced?: boolean,
-  target: string,     // 必填的視窗/定位標的 (v1.2.2)
+  target: string,     // 多態定位標的（agent_id / term_key / session_id）；v1.3.0 起僅作 auth 用，實際 term_key 由 server.mjs 從 process.env 解析
   timeout?: number    // 存活超時時間（分鐘），預設為 1440 分鐘，寫入 DB 時自動乘以 60
 ): Promise<{ success: true, registered_agents: Array<{ agent_id: string, role: string }>, session_id: string, forced: boolean, term_key: string, orphans_notified?: number }
  | { success: false, reason: string }>
 
 
-> RC Cleanup Note: `registerAgent(db, sessionId, agentId, role, forced, target, timeout)` 為 v1.2.2 相容簽名。下一版 SHOULD 改為 command object：`registerAgent(db, RegisterAgentCommand)`，避免 positional arguments 導致 `target` / `timeout` 誤傳。
+> v1.3.0 Note: `registerAgent(db, sessionId, agentId, role, forced, target, timeout)` 中的 `target` 參數語義已從「強制 term_key 來源」變更為「auth/定位用途」。server.mjs 的 register_agent MCP handler 必須在呼叫前以 `process.env.PIC_TERM_KEY || process.env.WT_SESSION` 解析出 `resolvedTermKey` 並傳入；兩者均缺失時拒絕，不可 fallback 至 `target`。下一版 SHOULD 改為 command object：`registerAgent(db, RegisterAgentCommand)`，避免 positional arguments 混淆。
 
 ---
 
@@ -313,3 +322,36 @@ node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]
     3.  **退出狀態**：
         - 註冊成功：以 `process.exit(0)` 退出。
         - 註冊失敗或參數驗證不合法：以 `process.exit(1)` 退出。
+
+---
+
+## bin/server.mjs — register_agent MCP Handler: resolvedTermKey 狀態轉移規範（v1.3.0）
+
+`register_agent` MCP handler 在呼叫 `registerAgent()` 前，**MUST** 依下表狀態轉移導出 `resolvedTermKey`：
+
+| 路徑 | 假設條件 | `resolvedTermKey` 結果 | 預期行為 |
+|---|---|---|---|
+| **正常路徑** | `PIC_TERM_KEY` 存在於 trusted env | `resolvedTermKey` = `PIC_TERM_KEY` | 繼續註冊 |
+| **降級路徑** | `PIC_TERM_KEY` 缺失，`WT_SESSION` 存在於 trusted env | `resolvedTermKey` = `WT_SESSION` | 繼續註冊，且 MUST 發出 warning |
+| **拒絕路徑** | `PIC_TERM_KEY` 與 `WT_SESSION` 均不存在，且未開啟 debug flag | N/A | MUST 回傳 `term_key_unavailable`（見 error-codes.md） |
+| **Debug 路徑** | `PIC_TERM_KEY` 與 `WT_SESSION` 均不存在，且 debug flag 已開啟，且 `target` 存在 | `resolvedTermKey` = `target` | MAY 繼續註冊，MUST 發出 warning；標記為 emergency/debug only |
+
+**Contract 變不變式（Invariants）**：
+- `resolvedTermKey` MUST 來自 trusted env（`PIC_TERM_KEY` 或 `WT_SESSION`）或經 debug flag 明確許可的 `target`。
+- AI 透過 tool call 傳入的 `target` 在正常路徑與降級路徑下 MUST NOT 被用作 `resolvedTermKey`；僅作 auth/定位用途。
+- Debug 路徑的 `resolvedTermKey` 必須是 `target`（不得是空字串或其他個），且 MUST warning。
+- `PIC_TERM_KEY` 優先於 `WT_SESSION`；兩者同時存在時，獲取 `PIC_TERM_KEY`。
+- CI / Docker / 遠端非互動環境預設缺少 `PIC_TERM_KEY` / `WT_SESSION`：必須走拒絕路徑，不可自動 fallback，除非 CI 管線已明確注入 `PIC_TERM_KEY`。
+
+**debug flag**：名稱保留為實作層分析，規格僅要求存在一個可導入 debug 路徑的明確 opt-in 機制，預設關閉。
+
+**測試矩陣（PG MUST 實作）**：
+
+| 情境 | `PIC_TERM_KEY` | `WT_SESSION` | debug flag | `target` | 預期路徑 |
+|---|---|---|---|---|---|
+| 正常 | ✅ | - | - | - | 正常路徑 |
+| 降級 | ❌ | ✅ | - | - | 降級路徑 + warning |
+| 拒絕 | ❌ | ❌ | 關閉 | any | 拒絕路徑 |
+| Debug | ❌ | ❌ | 開啟 | ✅ 存在 | Debug 路徑 + warning |
+| Debug 但無 target | ❌ | ❌ | 開啟 | ❌ 缺失 | 拒絕路徑 |
+| CI 未注入 | ❌ | ❌ | 關閉 | any | 拒絕路徑 |

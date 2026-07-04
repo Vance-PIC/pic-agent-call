@@ -1,4 +1,4 @@
-# SDD-Spec (L1) — pic-agent-call v1.2.2
+# SDD-Spec (L1) — pic-agent-call v1.3.0
 
 ## 1. 專案概述
 
@@ -126,14 +126,26 @@ pic-agent-call/
 | unregister_agent | status.unregisterAgent |
 | agent_status | status.getAgentStatus |
 
-#### register_agent 參數與清理規範（v1.2.2 優化）
+#### register_agent 參數與清理規範（v1.2.2 優化 / v1.3.0 term_key 解析修訂）
 
 為了提高 API 參數命名的精確度，並落實多視窗安全防禦，`register_agent` 進行以下修正：
-1. **`target` 必填參數與 Library 卡控**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。傳入值強制為 `$env:PIC_TERM_KEY`。在 `registerAgent` 函式內第一步必須強制檢驗，若 `target` 為空直接回傳 `{ success: false, reason: 'target_required' }`，拒絕寫入空 `term_key`。
-2. **原子化 Timeout 與 Transaction Retry**：
+1. **`target` 必填參數與 Library 卡控**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。在 `registerAgent` 函式內第一步必須強制檢驗，若 `target` 為空直接回傳 `{ success: false, reason: 'target_required' }`，拒絕寫入空 `term_key`。
+2. **v1.3.0 term_key 嚴格解析（跨 CLI 通用）**：
+   - `server.mjs`（MCP 入口）的 `register_agent` handler **MUST** 從 **`process.env.PIC_TERM_KEY || process.env.WT_SESSION`** 取得 `resolvedTermKey`。
+   - **⚠️ Invariant（不可破壞）**：三道防線所使用的 `term_key` 必須來自 trusted `resolvedTermKey`，嚴禁直接使用 AI 傳入的 `target` 作為 term_key。
+   - 若 `PIC_TERM_KEY` 與 `WT_SESSION` **均不存在**：**MUST** 直接拒絕，回傳 normalized error：
+     ```json
+     { "success": false, "reason": "term_key_unavailable",
+       "diagnostics": { "has_pic_term_key": false, "has_wt_session": false, "target_received": true } }
+     ```
+   - **CI / Docker / 遠端非互動環境**：上述環境預設缺少 `PIC_TERM_KEY` / `WT_SESSION`，行為應為拒絕，不可默默 fallback 至 `target`。若需在 CI 中使用，必須明確注入 `PIC_TERM_KEY` 至環境變數。
+   - **Debug/Legacy Fallback（緊急備援，非 production path）**：僅在環境變數 `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 明確設定時，才允許 fallback 至 AI 傳入的 `target`，且 **MUST** 輸出 warning log，規格標註為 `emergency/debug only`，不得在正式環境啟用。
+   - `target` 參數僅作為 **auth/定位用途**（多態解析 agent_id / term_key / session_id），不再強制作為 term_key 寫入 DB。
+   - 此規則對 **AGY CLI、Claude Code、未來任何以 CLI spawn MCP 的平台** 皆通用。
+3. **原子化 Timeout 與 Transaction Retry**：
    - 將 `timeout` 參數移入 `registerAgent` 函式內部，使其與註冊寫入在同一個 transaction 內原子更新。
    - 將 `registerAgent` 定義為 **`async`** 函式，且整個 transaction 包裹在 `withRetry` 非同步重試邏輯中，解決多視窗並發寫入時的 `SQLITE_BUSY` 鎖定錯誤。
-3. **強制接管卡控與 Active 鎖定釋放**：
+4. **強制接管卡控與 Active 鎖定釋放**：
    - 不論是否為 `forced` 註冊，在執行註冊迴圈前，都必須先將當前會話下的所有 active 角色狀態重置為 `attached`，以釋放 `idx_agents_term_active` 索引，防範主從角色切換時的唯一性約束衝突。
    - 在 `forced=true` 清理舊角色時，SQL 同時過濾 `session_id` 與 `term_key`。
    （以保證只有當前視窗下的舊角色會被設為 offline，絕不誤殺相同 session_id 但 different term_key 的其他視窗角色）。
@@ -212,8 +224,8 @@ SQLite Provider implementation
 | 使用者直接在目標 terminal 執行 `node bin/register.mjs <agent_id>` | Trusted | 可繼承正確 `PIC_TERM_KEY` |
 | Foreground Hook 以 deterministic 規則引導或觸發 CLI | Trusted / Controlled | 必須可證明在前台 terminal environment 執行 |
 | LLM Command Runner 背景執行 CLI | Conditional | 只有在該平台已驗證會繼承正確 terminal environment 時才可啟用 |
-| LLM 透過 tool call 傳遞 terminal key | Untrusted | 不得作為預設註冊路徑 |
-| 背景 MCP Server 自行推導 terminal identity | Untrusted | 不得猜測 `PIC_TERM_KEY` |
+| LLM 透過 tool call 傳遞 terminal key | Untrusted | **不得作為預設 term_key 來源**；AI 透過 run_command 抓取的 PIC_TERM_KEY 屬於新 spawn 的子 shell，與 CLI 主行程的 WT_SESSION 不同，不可信任 |
+| **MCP Server 讀取自身 process.env.PIC_TERM_KEY（v1.3.0）** | **Trusted** | **MCP server 為 CLI 子行程，process.env.PIC_TERM_KEY 天然繼承自視窗注入 UUID，與 statusline 同源，此為唯一可信 term_key 來源** |
 
 ### 5.3 `bin/register.mjs` 職責
 
@@ -425,11 +437,22 @@ SQLite Provider implementation
      DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || historyPurgeMin || ' minutes')
      ```
 
-8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正)**：
-   * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝與引導環境設定腳本。
-   * **自動注入行為**：當此安裝或引導腳本執行時，必須在使用者當前的 Shell 環境中檢測並自動注入非空視窗識別碼：
-     * 若發現當前視窗環境變數 `$env:PIC_TERM_KEY`（或舊的 `WT_SESSION`）不存在：
-       * 腳本**必須自動產生一組全新的 UUID 碼**。
-       * 在 Windows (PowerShell/Cmd) 環境下，腳本必須將此 UUID 自動寫入當前活動視窗的環境變數：`$env:PIC_TERM_KEY = "UUID"`。
-       * 在 Unix/Linux/macOS (Bash/Zsh) 環境下，腳本必須將此 UUID 自動執行 `export PIC_TERM_KEY="UUID"` 寫入該 Shell 視窗。
-     * 這能使後續從該視窗衍生啟動的對話框與狀態列定時重新整理等子行程繼承並共享該 `PIC_TERM_KEY`；但背景/遠端執行器不得假設其子 shell 會自動繼承此變數，除非該平台已物理驗證其繼承性。
+8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正 / v1.3.0 隔離優化)**：
+   * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝腳本，以及寫入使用者 Profile 的 Terminal 啟動金鑰注入邏輯。
+   * **金鑰隔離設計合約 (v1.3.0)**：
+     - **`PIC_TERM_KEY`**：Terminal 唯一識別 UUID。
+     - **`PIC_TERM_KEY_SCOPE`**：產生該金鑰的 Terminal 類型。列舉值：`vscode` (VS Code 整合終端機)、`windows-terminal` (獨立 Windows Terminal)、`generic-shell` (一般獨立主控台)。
+     - **隔離合約（防止 Windows Terminal 啟動 VS Code 時的變數繼承污染）**：
+       - 若 `PIC_TERM_KEY` 已存在且其 `PIC_TERM_KEY_SCOPE` 與當前運行的 Shell 類型一致，**MUST** 直接沿用（不得重生），以保證同分頁下所有子行程（如 `run_command`、擷取 sub-shell）共用同一個金鑰。
+       - 若在 VS Code 整合終端機環境中，且繼承來的 `PIC_TERM_KEY_SCOPE` 不是 `vscode`（例如繼承自 WT 啟動的 `code .`），則 **SHOULD** 強制重新生成 `PIC_TERM_KEY` 並將 `PIC_TERM_KEY_SCOPE` 更新為 `vscode`，以維持物理分頁隔離。
+       - 徹底廢止對 `WT_SESSION` 環境變數的主動寫入。
+
+   * **狀態轉移合約表**：
+
+     | 當前環境 | `PIC_TERM_KEY` 狀態 | 繼承之 `PIC_TERM_KEY_SCOPE` | 預期行為 (System Behavior) |
+     |---|---|---|---|
+     | 任何環境 | ❌ 缺失 | ❌ 缺失 | 生成全新 UUID 寫入 `PIC_TERM_KEY`，並設定為當前環境對應的 SCOPE |
+     | VS Code | ✅ 存在 | `vscode` | **保留** (子行程/分頁內部穩定) |
+     | VS Code | ✅ 存在 | 非 `vscode` (如繼承自 WT 的 `code .`) | **重新生成** UUID，並將 SCOPE 改為 `vscode` (防止污染) |
+     | Windows Terminal | ✅ 存在 | `windows-terminal` | **保留** (同分頁 nested shell 穩定) |
+     | 一般獨立 Shell | ✅ 存在 | `generic-shell` | **保留** (同分頁 nested shell 穩定) |
