@@ -54,3 +54,40 @@
 請 PJM 審查並執行：
 scripts/approve-phase.ps1 -Feature feat-agent-multitenant-isolation -Phase P3
 ```
+
+---
+
+## v1.3.0-trusted-term-key（task-3b368741-08c8-4d9a-993a-6f4934f802de）
+
+> [!NOTE]
+> 🤖 **[交接上下文：P3 Coding ➔ P4 FunctionTest / QA]**
+>
+> - **任務來源**：AGY-SA 派工，根因為 AI 透過 `run_command` 讀取 `PIC_TERM_KEY` 時會 spawn 新 pwsh，量到的值與 CLI 主行程不同（非兩個物理視窗）
+> - **規格**：SDD-Spec.md / api-spec.md v1.3.0（§5.2 Trust Boundary、§register_agent v1.3.0、§9）
+> - **測試結果**：144/144 pass（7 suites），evidence: `evidence/v1.3.0-trusted-term-key-test-pass.log`
+
+### 實作摘要
+
+1. **`src/status.mjs`** 新增 `resolveTrustedTermKey(target)`：純函式，依 `process.env.PIC_TERM_KEY || process.env.WT_SESSION` 解析 trusted term_key；兩者皆缺時回傳 `term_key_unavailable` + diagnostics；僅 `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 時允許 fallback 至 AI 傳入的 `target`（並發 warning）。
+2. **`bin/server.mjs`** register_agent handler：呼叫 `resolveTrustedTermKey(target)` 取得 `resolvedTermKey`，傳入 `registerAgent()` 取代原本直傳 `target`；解析失敗直接回傳 `{ success:false, reason:'term_key_unavailable', diagnostics }`；`target` 參數 describe 文字同步更新為僅作 auth 用途。
+3. **`bin/agent-statusline.mjs`** 移除 AGY 分支（`ANTIGRAVITY_CONVERSATION_ID`/`CLAUDE_CODE_SESSION_ID` 平台判斷），還原為 `process.env.PIC_TERM_KEY || resolveSessionId() || ''`，與 register_agent 同源。
+4. **測試**：`tests/status.test.mjs` 新增 `resolveTrustedTermKey()` describe block，覆蓋 api-spec 6 case 矩陣（正常/降級/拒絕/Debug/Debug 無 target/CI 未注入）+ PIC_TERM_KEY 優先 invariant，共 7 個新測試（#43–49）。TDD RED→GREEN 全程走完。
+
+### 注意事項（QA 必讀）
+
+1. `bin/agent-statusline.mjs`、`bin/register.mjs` 皆為頂層 side-effect script（呼叫即執行、`process.exit`），專案慣例不直接單元測試，以 `evidence/` log 佐證。
+2. 順帶發現 `scripts/setup-terminal-key.ps1`：VS Code 整合終端機每次啟動**強制**重生 UUID（非僅缺失時才生成）。與本次修法無牴觸（trusted term_key 邏輯本身不變，只要 register 與 statusline 出自同一個實際持久 shell 即一致），但若之後仍有跨 tab 不一致回報，這支腳本是優先排查點，供 SA 參考。
+
+### 相依套件
+
+無新增套件。
+
+### P3 完成宣告
+
+```
+✅ v1.3.0-trusted-term-key 已完成
+📂 產出物：specs/P3_Coding/dev_notes.md
+📂 程式碼：src/status.mjs、bin/server.mjs、bin/agent-statusline.mjs、tests/status.test.mjs
+📂 Evidence：evidence/v1.3.0-trusted-term-key-test-pass.log
+✅ 144/144 tests pass
+```

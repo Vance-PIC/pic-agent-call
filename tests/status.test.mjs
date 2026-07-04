@@ -17,6 +17,7 @@ let resolveSessionId, getRegistration, getRegistrations, findAgentIdConflict;
 let registerAgent, handleOrphanedMessages, getAgentStatus;
 let _resetSessionIdCache;
 let getAgentsByPlatformStatus;
+let resolveTrustedTermKey;
 
 beforeAll(async () => {
   const dbMod = await import('../src/db.mjs');
@@ -32,6 +33,7 @@ beforeAll(async () => {
   getAgentStatus                = statusMod.getAgentStatus;
   _resetSessionIdCache          = statusMod._resetSessionIdCache;
   getAgentsByPlatformStatus     = statusMod.getAgentsByPlatformStatus;
+  resolveTrustedTermKey         = statusMod.resolveTrustedTermKey;
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -192,6 +194,103 @@ describe('findAgentIdConflict()', () => {
     const result = findAgentIdConflict(db, 'CC-NOBODY', 'sess-any');
 
     expect(result).toBeNull();
+  });
+});
+
+// ── resolveTrustedTermKey() v1.3.0 ──────────────────────────────────────────
+// api-spec.md §register_agent v1.3.0 測試矩陣（6 case）
+
+describe('resolveTrustedTermKey() v1.3.0', () => {
+  const TERM_ENV_KEYS = ['PIC_TERM_KEY', 'WT_SESSION', 'PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY'];
+  let savedTermEnv = {};
+
+  beforeEach(() => {
+    savedTermEnv = {};
+    for (const k of TERM_ENV_KEYS) {
+      savedTermEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of TERM_ENV_KEYS) {
+      if (savedTermEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedTermEnv[k];
+    }
+  });
+
+  // 43. 正常路徑：PIC_TERM_KEY 存在 → 使用 PIC_TERM_KEY
+  test('43. 正常路徑：PIC_TERM_KEY 存在時使用 PIC_TERM_KEY，無 warning', () => {
+    process.env.PIC_TERM_KEY = 'pic-term-abc';
+
+    const result = resolveTrustedTermKey('untrusted-target');
+
+    expect(result.resolvedTermKey).toBe('pic-term-abc');
+    expect(result.warning).toBeFalsy();
+    expect(result.reason).toBeUndefined();
+  });
+
+  // 44. 降級路徑：PIC_TERM_KEY 缺失，WT_SESSION 存在 → 使用 WT_SESSION + warning
+  test('44. 降級路徑：PIC_TERM_KEY 缺失時 fallback WT_SESSION 並帶 warning', () => {
+    process.env.WT_SESSION = 'wt-session-xyz';
+
+    const result = resolveTrustedTermKey('untrusted-target');
+
+    expect(result.resolvedTermKey).toBe('wt-session-xyz');
+    expect(result.warning).toBeTruthy();
+  });
+
+  // 45. 拒絕路徑：兩者均缺失，debug flag 未開 → term_key_unavailable
+  test('45. 拒絕路徑：PIC_TERM_KEY 與 WT_SESSION 均缺失時回傳 term_key_unavailable', () => {
+    const result = resolveTrustedTermKey('untrusted-target');
+
+    expect(result.resolvedTermKey).toBeFalsy();
+    expect(result.reason).toBe('term_key_unavailable');
+    expect(result.diagnostics).toEqual({
+      has_pic_term_key: false,
+      has_wt_session: false,
+      target_received: true,
+    });
+  });
+
+  // 46. Debug 路徑：兩者缺失，debug flag 開啟且 target 存在 → fallback target + warning
+  test('46. Debug 路徑：debug flag 開啟且 target 存在時 fallback target 並帶 warning', () => {
+    process.env.PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY = '1';
+
+    const result = resolveTrustedTermKey('untrusted-target');
+
+    expect(result.resolvedTermKey).toBe('untrusted-target');
+    expect(result.warning).toBeTruthy();
+  });
+
+  // 47. Debug 但無 target：debug flag 開啟但 target 缺失 → 仍拒絕
+  test('47. Debug 路徑但 target 缺失時仍回傳 term_key_unavailable', () => {
+    process.env.PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY = '1';
+
+    const result = resolveTrustedTermKey('');
+
+    expect(result.resolvedTermKey).toBeFalsy();
+    expect(result.reason).toBe('term_key_unavailable');
+    expect(result.diagnostics.target_received).toBe(false);
+  });
+
+  // 48. CI 未注入：兩者缺失、debug 關閉 → 同拒絕路徑，不可 fallback target
+  test('48. CI 未注入環境（兩者缺失且 debug 關閉）不可 fallback target', () => {
+    const result = resolveTrustedTermKey('ci-provided-target');
+
+    expect(result.resolvedTermKey).toBeFalsy();
+    expect(result.reason).toBe('term_key_unavailable');
+  });
+
+  // 49. Invariant：PIC_TERM_KEY 優先於 WT_SESSION
+  test('49. PIC_TERM_KEY 與 WT_SESSION 同時存在時優先取 PIC_TERM_KEY', () => {
+    process.env.PIC_TERM_KEY = 'pic-wins';
+    process.env.WT_SESSION = 'wt-loses';
+
+    const result = resolveTrustedTermKey('untrusted-target');
+
+    expect(result.resolvedTermKey).toBe('pic-wins');
+    expect(result.warning).toBeFalsy();
   });
 });
 

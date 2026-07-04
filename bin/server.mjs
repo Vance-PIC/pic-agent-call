@@ -17,6 +17,7 @@ import {
     registerAgent,
     unregisterAgent,
     getAgentStatus,
+    resolveTrustedTermKey,
 } from '../src/status.mjs';
 import { readAgentSettings } from '../src/db.mjs';
 
@@ -235,17 +236,23 @@ server.tool('register_agent',
         agent_id: z.string().min(1).max(200).describe('代理人識別碼，支援多角色（逗號/頓號分隔），例如 CC-PG1 或 PJM、PDM、SA'),
         role: z.string().max(50).optional().describe('角色標籤，單角色時覆蓋自動推導結果'),
         force: z.boolean().optional().describe('強制接管：true 時直接覆寫 DB 中的 session_id，忽略 conflict 檢查'),
-        target: z.string().describe('當前終端機識別鍵，傳入 $env:PIC_TERM_KEY（Windows Terminal WT_SESSION）。statusline 依此識別所屬視窗。換角色時自動處理孤兒訊息並通知原始發送者。'),
+        target: z.string().describe('定位/auth 用途標的（v1.3.0 起不再直接當 term_key 寫入 DB，實際 term_key 由伺服器自 process.env.PIC_TERM_KEY/WT_SESSION 解析）。可傳 agent_id 或 $env:PIC_TERM_KEY。換角色時自動處理孤兒訊息並通知原始發送者。'),
         timeout: z.number().int().positive().optional().describe('agent 超時分鐘數，寫入 DB 時自動乘以 60 換算為秒數；未傳入時沿用預設值（1440 分鐘 / 24 小時）。'),
     },
     async ({ agent_id, role, force, target, timeout }) => {
         const sessionId = resolveSessionId();
 
+        // v1.3.0：term_key 必須來自 trusted process.env（PIC_TERM_KEY || WT_SESSION），
+        // 嚴禁將 AI 傳入的 target 直接當 term_key 寫入 DB（SDD-Spec.md §5.2 / §9）
+        const { resolvedTermKey, warning, reason, diagnostics } = resolveTrustedTermKey(target);
+        if (!resolvedTermKey) return textJson({ success: false, reason, diagnostics });
+        if (warning) process.stderr.write(`[WARN] ${warning}\n`);
+
         // timeout 單位為分鐘，未傳時從 settings 讀 agentTimeoutMin（預設 1440）
         const effectiveTimeoutMin = timeout != null ? timeout : readAgentSettings().agentTimeoutMin;
 
         // lib 層同時處理 target 必填、timeout 原子寫入
-        const result = await registerAgent(db, sessionId, agent_id, role, !!force, target, effectiveTimeoutMin);
+        const result = await registerAgent(db, sessionId, agent_id, role, !!force, resolvedTermKey, effectiveTimeoutMin);
         if (!result.success) return textJson(result);
 
         result.agent_timeout_min = effectiveTimeoutMin;

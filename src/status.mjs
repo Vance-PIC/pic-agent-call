@@ -182,6 +182,40 @@ function _parseAgentIds(rawAgentId, sessionId) {
     return result;
 }
 
+// v1.3.0 term_key 嚴格解析（跨 CLI 通用，見 SDD-Spec.md §5.2 / §9）
+// server.mjs 的 register_agent handler 必須在呼叫 registerAgent() 前呼叫本函式，
+// 取得 trusted resolvedTermKey，嚴禁將 AI 傳入的 target 直接當 term_key 寫入 DB。
+export function resolveTrustedTermKey(target) {
+    const picTermKey = process.env.PIC_TERM_KEY;
+    const wtSession = process.env.WT_SESSION;
+    const debugFlag = process.env.PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY === '1';
+
+    if (picTermKey) {
+        return { resolvedTermKey: picTermKey, warning: null };
+    }
+    if (wtSession) {
+        return {
+            resolvedTermKey: wtSession,
+            warning: 'PIC_TERM_KEY missing, falling back to WT_SESSION. Consider setting PIC_TERM_KEY.',
+        };
+    }
+    if (debugFlag && target) {
+        return {
+            resolvedTermKey: target,
+            warning: 'emergency/debug only: PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1 in use, falling back to untrusted target as term_key. DO NOT USE IN PRODUCTION.',
+        };
+    }
+    return {
+        resolvedTermKey: null,
+        reason: 'term_key_unavailable',
+        diagnostics: {
+            has_pic_term_key: false,
+            has_wt_session: false,
+            target_received: !!target,
+        },
+    };
+}
+
 // Upsert agent registration
 // v1.2.2：target 必填（lib 層卡控），async + withRetry，timeout 納入同 transaction
 //         forced/非 forced 均先降 active→attached 釋放 idx_agents_term_active 鎖
