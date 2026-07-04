@@ -3,51 +3,30 @@
 // v1.1.0：多角色並列顯示，格式 ▶🔴1·CC-PG1  🟢0·CC-SA1
 // v1.1.1：直接以 session ID 查 DB，禁止掃描 agent-sessions/ fallback
 // v1.1.2：agents.term_key 存 WT_SESSION；statusline 優先用 WT_SESSION 查 DB
+// v1.3.0：還原 PIC_TERM_KEY 優先，移除 AGY 平台分支（SDD-Spec.md §9）；
+//         PIC_TERM_KEY 為 CLI 子行程天然繼承之 trusted term_key，與 register_agent 同源
 import { setup } from '../src/db.mjs';
-import { resolveSessionId, getRegistrationsByTermKey, getRegistrations, getAgentStatus } from '../src/status.mjs';
+import { resolveSessionId, getAgentStatus } from '../src/status.mjs';
 
 function exitNoAgent() { process.stdout.write('NO AGENT\n'); process.exit(0); }
 
-let db, dbPath;
+let db;
 try {
-    ({ db, dbPath } = setup());
+    ({ db } = setup());
 } catch (_) {
     exitNoAgent();
 }
 
-const termKey = process.env.PIC_TERM_KEY || process.env.WT_SESSION;
+const target = process.env.PIC_TERM_KEY || resolveSessionId() || '';
 
-// 主查詢：term_key（PIC_TERM_KEY / WT_SESSION）直查，跳過 session_id 中間層
-let regs = null;
-let querySessionId = null;
+if (!target) exitNoAgent();
 
-if (termKey) {
-    try {
-        regs = getRegistrationsByTermKey(db, termKey);
-        if (regs && regs.length > 0) querySessionId = regs[0].session_id;
-    } catch (_) {}
-}
+let status;
+try {
+    status = getAgentStatus(db, target);
+} catch (_) {}
 
-// fallback：term_key 查不到，改用 session_id 查（AGY 或無 term_key 環境）
-if (!regs || regs.length === 0) {
-    const callerType = process.env.CLAUDE_CODE_SESSION_ID ? 'cc'
-        : process.env.ANTIGRAVITY_CONVERSATION_ID ? 'agy'
-        : null;
-    querySessionId = resolveSessionId(callerType);
-    try {
-        regs = getRegistrations(db, querySessionId);
-    } catch (_) {}
-}
-
-if (!regs || regs.length === 0) {
-    exitNoAgent();
-}
-
-// primaryAgentId 不傳入，由 getAgentStatus 自行從 DB status='active' 判斷
-const status = getAgentStatus(db, querySessionId);
-if (!status) {
-    exitNoAgent();
-}
+if (!status || !status.registered) exitNoAgent();
 
 process.stdout.write(status.display + '\n');
 process.exit(0);

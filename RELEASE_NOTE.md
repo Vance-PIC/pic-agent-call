@@ -1,3 +1,29 @@
+# Release Note — @pic-ai/pic-agent-call v1.3.1
+
+* **發布日期**：2026-07-04
+* **版本編號**：`v1.3.1`
+* **發布角色**：`AGY-SA` (System Architect)
+
+---
+
+## 🚀 新增功能與重大升級 (New Features & Enhancements in v1.3.1)
+
+### 1. Trusted term_key 解析與安全防護 (v1.3.0)
+* **規格安全解耦**：MCP Server 的 `register_agent` 徹底與 AI 傳入的 `target` 參數解耦。`resolvedTermKey` 改為強制自 MCP 行程環境變數 `process.env.PIC_TERM_KEY || process.env.WT_SESSION` 解析。
+* **安全卡控防護**：兩者皆缺時直接回傳 `term_key_unavailable` 拒絕註冊；僅在 `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 的 debug flag 開啟時才允許 fallback 至 AI target（並輸出警告）。
+
+### 2. 狀態列與 Profile 啟動金鑰 Scope 隔離機制 (v1.3.0)
+* **Profile 注入重構**：重構 `scripts/setup-terminal-key.ps1`，引入 `PIC_TERM_KEY_SCOPE`（`vscode` / `windows-terminal` / `generic-shell`）。
+* **隔離合約**：只在 Scope 不符或缺失時才重新生成 UUID；在 VS Code 整合終端機繼承自 Windows Terminal 的 `code .` 環境變數污染時，會自動重新生成並更新為 `vscode`，徹底防範金鑰互蓋與 `NO AGENT` 異常。
+
+### 3. 平台池 (Platform Pool) 支援 (v1.3.1)
+* **協作擴充**：新增平台信箱池（例如投遞至 `CC?` 或 `AGY?`）。系統會根據 `agent_id` 的前綴自動解析平台，使該平台下的所有活躍角色（不限角色）皆能拉取並進行原子搶鎖協作。
+
+### 4. 發送者自排除 (Sender Self-Exclusion) (v1.3.1)
+* **收件匣清理**：`listUnread` 查詢未讀時，會自動排除由當前視窗活躍角色群（`regs.agent_id`）自己發送的 `any`、`role?` 或 `platform?` 任務，避免自己在收件匣中看見並搶鎖自己發送的工作。
+
+---
+
 # Release Note — @pic-ai/pic-agent-call v1.2.0
 
 * **發布日期**：2026-06-29

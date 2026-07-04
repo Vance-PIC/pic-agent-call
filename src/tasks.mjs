@@ -2,20 +2,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import { withRetry } from './db.mjs';
 
 const TIMEOUT_MINUTES = 30;
+const TIMEOUT_SECONDS = TIMEOUT_MINUTES * 60;
 
 
+// 僅供測試隔離使用（初始化 agents 表）；正式初始化請使用 src/db.mjs setup()
 export function initAgentsTable(db) {
     db.exec(`CREATE TABLE IF NOT EXISTS agents (
         agent_id          TEXT PRIMARY KEY,
         last_seen         TEXT,
-        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','offline')),
-        agent_timeout_sec INTEGER NOT NULL DEFAULT 120,
+        status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
+        agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT,
+        term_key          TEXT NOT NULL,
+        session_id        TEXT,
+        role              TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )`);
-    try { db.exec(`ALTER TABLE agents ADD COLUMN term_key TEXT`); } catch (_) {}
 }
 
 export async function createTask(db, feature, assign_to, payload, type, relay_to) {
@@ -25,7 +28,7 @@ export async function createTask(db, feature, assign_to, payload, type, relay_to
         return { success: false, reason: 'validation_error' };
     if (!payload || typeof payload !== 'string' || !payload.trim())
         return { success: false, reason: 'validation_error' };
-    if (Buffer.byteLength(payload, 'utf8') > 1048576)
+    if (Buffer.byteLength(payload, 'utf8') > 65536)
         return { success: false, reason: 'payload_too_large' };
 
     const validTypes = ['task', 'final'];
@@ -39,63 +42,91 @@ export async function createTask(db, feature, assign_to, payload, type, relay_to
         return { success: false, reason: 'validation_error' };
 
     const hash = createHash('sha256').update(feature + '|' + payload).digest('hex');
-    const existing = db.prepare('SELECT task_id, status, type FROM tasks WHERE payload_hash = ?').get(hash);
-    if (existing) return { task_id: existing.task_id, status: existing.status, type: existing.type, idempotent: true };
-
     const taskId = 'task-' + randomUUID();
-    await withRetry(() => {
-        db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+    const result = await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const existing = db.prepare('SELECT task_id, status, type FROM tasks WHERE payload_hash = ?').get(hash);
+            if (existing) { db.exec('ROLLBACK'); return { task_id: existing.task_id, status: existing.status, type: existing.type, idempotent: true }; }
+            db.prepare('INSERT INTO tasks (task_id, feature, assign_to, payload, type, relay_to, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .run(taskId, feature.trim(), assign_to.trim(), payload, resolvedType, resolvedRelayTo, hash);
+            db.exec('COMMIT');
+            return null;
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
     });
+    if (result) return result;
     return { task_id: taskId, status: 'pending', type: resolvedType, idempotent: false };
 }
 
-export function listPendingTasks(db, assign_to) {
+export async function listPendingTasks(db, assign_to) {
     const assignTo = (assign_to && typeof assign_to === 'string') ? assign_to.trim() : null;
-    // 超時釋放：基於認領該任務的 agent 的 agent_timeout_sec；fallback 用 TIMEOUT_MINUTES
-    db.prepare(
-        `UPDATE tasks SET status='pending', claimed_by=NULL, claimed_at=NULL, updated_at=datetime('now','localtime')
-         WHERE status='claimed' AND claimed_by IS NOT NULL AND (
-             SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
-         ) < datetime('now','localtime','-' || COALESCE(
-             (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
-             ${TIMEOUT_MINUTES * 60}
-         ) || ' seconds')`
-    ).run();
+    // 超時釋放：withRetry 防 SQLITE_BUSY；BEGIN IMMEDIATE 確保原子性
+    await withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            db.prepare(
+                `UPDATE tasks SET status='pending', claimed_by=NULL, claimed_at=NULL, updated_at=datetime('now','localtime')
+                 WHERE status='claimed' AND claimed_by IS NOT NULL AND (
+                     SELECT last_seen FROM agents WHERE agent_id = tasks.claimed_by
+                 ) < datetime('now','localtime','-' || COALESCE(
+                     (SELECT agent_timeout_sec FROM agents WHERE agent_id = tasks.claimed_by),
+                     ${TIMEOUT_SECONDS}
+                 ) || ' seconds')`
+            ).run();
+            db.exec('COMMIT');
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 
+    const COLS = 'task_id, feature, assign_to, payload, type, relay_to, status, created_at';
     const rows = assignTo
-        ? db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)
-        : db.prepare(`SELECT task_id, feature, assign_to, payload, type, relay_to, status, created_at FROM tasks WHERE status='pending' ORDER BY created_at ASC`).all();
+        ? db.prepare(`SELECT ${COLS} FROM tasks WHERE status='pending' AND assign_to=? ORDER BY created_at ASC`).all(assignTo)
+        : db.prepare(`SELECT ${COLS} FROM tasks WHERE status='pending' ORDER BY created_at ASC`).all();
     return { tasks: rows, count: rows.length };
 }
 
-export function claimTask(db, task_id, agent_id) {
+export async function claimTask(db, task_id, agent_id) {
     if (!task_id || !agent_id || typeof agent_id !== 'string' || !agent_id.trim() || agent_id.length > 100)
         return { success: false, reason: 'validation_error' };
 
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
-        if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
-        if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
-        const changes = db.prepare(
-            `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='pending'`
-        ).run(agent_id.trim(), task_id).changes;
-        if (changes === 0) { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: 'claimed', claimed_by: null }; }
-        db.exec('COMMIT');
-        const claimed = db.prepare('SELECT claimed_at FROM tasks WHERE task_id = ?').get(task_id);
-        return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: claimed.claimed_at };
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
-    }
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const agentRow = db.prepare(
+                `SELECT 1 FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+            ).get(agent_id.trim());
+            if (!agentRow) {
+                db.exec('ROLLBACK');
+                return { success: false, reason: '403: agent_id 未登記為活躍狀態，禁止領取任務' };
+            }
+
+            const row = db.prepare('SELECT status, claimed_by FROM tasks WHERE task_id = ?').get(task_id);
+            if (!row) { db.exec('ROLLBACK'); return { success: false, reason: 'not_found', current_status: null, claimed_by: null }; }
+            if (row.status !== 'pending') { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: row.status, claimed_by: row.claimed_by }; }
+            const changes = db.prepare(
+                `UPDATE tasks SET status='claimed', claimed_by=?, claimed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='pending'`
+            ).run(agent_id.trim(), task_id).changes;
+            if (changes === 0) { db.exec('ROLLBACK'); return { success: false, reason: 'already_claimed', current_status: 'claimed', claimed_by: null }; }
+            db.exec('COMMIT');
+            const claimed = db.prepare('SELECT claimed_at FROM tasks WHERE task_id = ?').get(task_id);
+            return { success: true, task_id, claimed_by: agent_id.trim(), claimed_at: claimed.claimed_at };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 }
 
 export async function completeTask(db, task_id, result) {
     if (!task_id || result === undefined || result === null)
         return { success: false, reason: 'validation_error' };
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-    if (Buffer.byteLength(resultStr, 'utf8') > 1048576)
+    if (Buffer.byteLength(resultStr, 'utf8') > 65536)
         return { success: false, reason: 'payload_too_large' };
 
     let completedAt = null;
@@ -109,7 +140,10 @@ export async function completeTask(db, task_id, result) {
                 `UPDATE tasks SET status='completed', result=?, completed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE task_id=? AND status='claimed'`
             ).run(resultStr, task_id).changes;
             if (changes === 0) { db.exec('ROLLBACK'); return 'race'; }
+            // COMMIT 前讀取 completed_at，避免 COMMIT 後獨立 SELECT 有 race window
+            const saved = db.prepare('SELECT completed_at FROM tasks WHERE task_id = ?').get(task_id);
             db.exec('COMMIT');
+            completedAt = saved?.completed_at ?? null;
             return 'ok';
         } catch (err) {
             try { db.exec('ROLLBACK'); } catch (_) {}
@@ -118,7 +152,6 @@ export async function completeTask(db, task_id, result) {
     });
     if (success === 'not_found') return { success: false, task_id, reason: 'not_found' };
     if (success !== 'ok') return { success: false, task_id, reason: 'invalid_status', current_status: success };
-    completedAt = db.prepare('SELECT completed_at FROM tasks WHERE task_id = ?').get(task_id)?.completed_at;
     return { success: true, task_id, status: 'completed', completed_at: completedAt };
 }
 

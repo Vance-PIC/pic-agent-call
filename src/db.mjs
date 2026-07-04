@@ -141,7 +141,9 @@ export function initDatabase(dbPath, jsonPath) {
         status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
         agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
         poll_interval_sec INTEGER NOT NULL DEFAULT 30,
-        term_key          TEXT NOT NULL DEFAULT '',
+        term_key          TEXT NOT NULL,
+        session_id        TEXT,
+        role              TEXT,
         created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     )`);
@@ -178,11 +180,49 @@ export function initDatabase(dbPath, jsonPath) {
     // v1.1.3 term_key 索引：statusline 優先以 PIC_TERM_KEY 直查
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_term_key ON agents(term_key)`);
     // v1.1.4 廢除 is_primary：移除舊索引
+    // 注意：is_primary 欄位本身未物理移除（SQLite DROP COLUMN 有前提限制）
+    // 欄位已廢棄不使用，DB 邏輯以 status='active'/'attached' 為準
     try { db.exec(`DROP INDEX IF EXISTS idx_agents_session_primary`); } catch (_) {}
-    // v1.1.4 三態：NULL term_key 補空字串
-    db.exec(`UPDATE agents SET term_key = '' WHERE term_key IS NULL`);
-    // v1.1.4 唯一活躍角色索引：同 term_key 只能一個 active（空字串豁免）
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active' AND term_key != ''`);
+    // v1.2.2 rebuild migration：若舊表 term_key 仍為 nullable，重建整張 agents 表以強制 NOT NULL
+    {
+        const colInfo = db.prepare(`PRAGMA table_info(agents)`).all();
+        const termKeyCol = colInfo.find(c => c.name === 'term_key');
+        if (termKeyCol && termKeyCol.notnull === 0) {
+            // NULL term_key 遷移僅在需要 rebuild 時執行（舊 DB 路徑）
+            db.exec(`UPDATE agents SET status = 'offline', term_key = 'legacy-' || agent_id WHERE term_key IS NULL OR term_key = ''`);
+            db.exec(`BEGIN IMMEDIATE`);
+            try {
+                db.exec(`CREATE TABLE new_agents (
+                    agent_id          TEXT PRIMARY KEY,
+                    last_seen         TEXT,
+                    status            TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active','attached','offline')),
+                    agent_timeout_sec INTEGER NOT NULL DEFAULT 86400,
+                    poll_interval_sec INTEGER NOT NULL DEFAULT 30,
+                    term_key          TEXT NOT NULL,
+                    session_id        TEXT,
+                    role              TEXT,
+                    created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                )`);
+                db.exec(`INSERT INTO new_agents
+                    (agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec, term_key, session_id, role, created_at, updated_at)
+                    SELECT agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec,
+                           COALESCE(NULLIF(term_key,''), 'legacy-' || agent_id),
+                           session_id, role, created_at, updated_at
+                    FROM agents`);
+                db.exec(`DROP TABLE agents`);
+                db.exec(`ALTER TABLE new_agents RENAME TO agents`);
+                db.exec(`COMMIT`);
+            } catch (err) {
+                try { db.exec(`ROLLBACK`); } catch (_) {}
+                throw err;
+            }
+        }
+    }
+    // v1.2.2 強制重建 idx_agents_term_active（predicate 從 "... AND term_key != ''" 改為無豁免）
+    // IF NOT EXISTS 無法更新 predicate，必須先 DROP 再 CREATE
+    try { db.exec(`DROP INDEX IF EXISTS idx_agents_term_active`); } catch (_) {}
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_term_active ON agents(term_key) WHERE status = 'active'`);
 
     const row = db.prepare('SELECT COUNT(*) as count FROM entities').get();
     if (row.count === 0 && fs.existsSync(jsonPath)) {
@@ -212,6 +252,15 @@ export function syncDbToJson(db, jsonPath) {
         _doSyncDbToJson(db, jsonPath);
     }, DEBOUNCE_MS);
     _syncTimers.set(jsonPath, timer);
+}
+
+// 取消防抖計時器（供測試 teardown 或 server shutdown 使用，防止 DB 已關閉後計時器觸發）
+export function cancelDbJsonSync(jsonPath) {
+    if (jsonPath) {
+        if (_syncTimers.has(jsonPath)) { clearTimeout(_syncTimers.get(jsonPath)); _syncTimers.delete(jsonPath); }
+        return;
+    }
+    for (const [p, t] of _syncTimers) { clearTimeout(t); _syncTimers.delete(p); }
 }
 
 async function _doSyncDbToJson(db, jsonPath) {
@@ -245,6 +294,8 @@ async function _doSyncDbToJson(db, jsonPath) {
             }
         }
     } catch (err) {
+        // db 已關閉（測試 teardown / server shutdown）時靜默跳過
+        if (err.code === 'ERR_INVALID_STATE' || (err.message && err.message.includes('database is not open'))) return;
         console.error('[pic-agent-call] _doSyncDbToJson: sync failed', err);
     }
 }

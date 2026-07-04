@@ -1,9 +1,18 @@
-# DB Schema (L2) — pic-agent-call v1.1.3
+# DB Schema (L2) — pic-agent-call v1.3.1
 
-沿用 `agent-call` 現有 schema，零遷移成本。
+沿用 `agent-call` 現有 schema，透過自動 migration 降低升級成本。
 DB 初始化由 `src/db.mjs initDatabase()` 負責。
 
+## 文件範圍
+
+本文件描述目前 SQLite Provider 的物理 schema、索引與 migration。
+
+SQLite DDL 是 implementation mechanism，不是未來 Storage Contract 的 portable behavior。
+
+Current schema 與 migration 規則必須服從 L1 `SDD-Spec.md` 中定義的三態 agent model、`term_key` terminal identity、Option D Lite v2 registration boundary 與 concurrency invariants。
+
 ---
+
 
 ## entities
 
@@ -127,7 +136,7 @@ CREATE INDEX idx_acc_receiver_status ON agent_collaboration_channel(receiver, st
 `initDatabase()` 啟動時執行（ALTER TABLE，欄位已存在則 ignore）：
 - `tasks` 補 `type` 欄位
 - `tasks` 補 `relay_to` 欄位
-- `agents` 補 `term_key` 欄位（且保證其設為 `NOT NULL`，若原本有 null 舊資料，一律自動遷移更新為當前 `PIC_TERM_KEY` 預設值）
+- `agents` 補 `term_key` 欄位（且保證其設為 `NOT NULL`。自動遷移時，若原本有 null 舊資料，一律 Fallback 設置為 `'legacy-' || agent_id`，且將其狀態 `status` 標記為 `'offline'`，以臨時表重建 `agents` 表之方式實施）
 - `agents` 補 `session_id` 欄位
 - `agents` 補 `role` 欄位
 - `agents` 物理刪除可能存在的唯一索引 `idx_agents_session_id` (`DROP INDEX IF EXISTS idx_agents_session_id`)，並改建非唯一索引 `CREATE INDEX IF NOT EXISTS idx_agents_session_id ON agents(session_id)`

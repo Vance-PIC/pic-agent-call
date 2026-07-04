@@ -1,7 +1,7 @@
 # Project Rules — pic-agent-call
 
 ## MCP Tools Permission Policy
-- 使用者已於 2026-06-21 09:27 授權：當 AI 代理人呼叫 `pic-agent-call` MCP 伺服器的所有工具時，皆無須再次詢問使用者，一律預先自動允許。
+- 使用者已授權：當 AI 代理人呼叫 `pic-agent-call` MCP 伺服器的所有工具時，皆無須再次詢問使用者，一律預先自動允許。
 
 ## Unit Testing Guidelines
 - **防範家目錄環境污染 (Home Directory Pollution)**：在編寫或執行涉及讀取使用者家目錄（如 `os.homedir()`、`~/.gemini`）的測試時，必須在測試環境或特定 Test Case 中 mock/stub 家目錄路徑（例如將其設為 nonexistent 虛擬路徑），以防止實體主機中的實際快取或設定干擾測試斷言。
@@ -11,7 +11,7 @@
 2. 若 `registered: false`：
    - **優先自動推導**：根據任務、環境變數或 WBS 自動呼叫 `register_agent`（如 `CC-PG1`、`AGY-SA`）。
    - **無法推導時**：主動詢問使用者選取角色後立即 `register_agent`，完成前不開始其他任務。
-3. 登記完成後方可進入正常工作流程。
+3. 登記完成後，立即呼叫 `channel_list_unread` 掃描所有角色未讀訊息，方可進入正常工作流程。
 
 ## Pre-action Message Check Gate (動作前訊息稽核門禁)
 - **觸發時機**：在呼叫任何「寫入/修改檔案工具」（如 `replace_file_content`, `write_to_file`）或「指令執行工具」（如 `run_command`）**之前**。
@@ -33,6 +33,7 @@
 ## 📜 SDD 規格驅動開發至高天條 (Spec-First Rule)
 - **原則**：在向任何 AI 代理人（特別是 `pic-PG`）發送程式碼修改請求前，**SA 必須先在物理規格書（L1 Requirements 或 L2 SDD-Spec/db-schema.md）中完成規格的異動與 Commit 提交**。
 - **約束**：嚴禁僅憑口頭或 Channel 訊息直接指派代碼修改。`pic-PG` 只認物理 SPEC 開工。SA 必須嚴格把關規格變更，始終維護 SDD 單一真實來源 (SSoT)。
-- **Git 破壞防禦線**：SA 進行規格修正或版本退回時，**絕對禁止執行 `git reset --hard` 或是任何波及 `src/` 或 `tests/` 範圍的毀滅性 git 操作**（以防誤殺 PG 工作區尚未 commit 的實體代碼）。若需退回，僅限使用精確的單一檔案還原（如 `git restore specs/`）。
+- **Git 破壞防禦線**：SA 進行規格修正或版本退回時，
+- **絕對禁止執行 `git reset --hard` 或是任何波及 `src/` 或 `tests/` 範圍的毀滅性 git 操作**（以防誤殺 PG 工作區尚未 commit 的實體代碼）。若需退回，僅限使用精確的單一檔案還原（如 `git restore specs/`）。
 
 

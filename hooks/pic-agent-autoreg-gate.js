@@ -3,6 +3,7 @@
  * pic-agent-autoreg-gate.js
  * UserPromptSubmit hook: if session not registered as agent, block and prompt user.
  * Implements AGENTS.md Spec 8 "AI 啟動時自動與互動式引導註冊機制".
+ * v1.2.2: uses getAgentStatus API (no hand-written SQL).
  */
 'use strict';
 
@@ -26,12 +27,12 @@ function resolveDbPath() {
     return path.join(os.homedir(), '.memory', 'memory-graph.db');
 }
 
-function main() {
+async function main() {
     // 放行 register_agent 呼叫本身，避免雞生蛋問題
     try {
         const input = JSON.parse(fs.readFileSync(0, 'utf8'));
         const prompt = (input?.prompt || '').toLowerCase().trimStart();
-        if (/^register[_ ]agent\b/.test(prompt)) {
+        if (/register[_ ]agent\b/.test(prompt)) {
             process.exit(0);
         }
     } catch (_) {}
@@ -39,12 +40,15 @@ function main() {
     const dbPath = resolveDbPath();
     if (!fs.existsSync(dbPath)) process.exit(0);
 
-    const sessionId = process.env.CLAUDE_CODE_SESSION_ID
-        || process.env.AGENT_SESSION_ID
-        || null;
-    if (!sessionId) process.exit(0);
-
-    const wtSession = process.env.PIC_TERM_KEY || process.env.WT_SESSION || null;
+    // 動態 import ESM 模組（v1.2.2：消除手寫 SQL，改用 getAgentStatus API）
+    let getAgentStatus, resolveSessionId;
+    try {
+        const statusMod = await import('../src/status.mjs');
+        getAgentStatus  = statusMod.getAgentStatus;
+        resolveSessionId = statusMod.resolveSessionId;
+    } catch (_) {
+        process.exit(0); // fail open
+    }
 
     let db;
     try {
@@ -55,47 +59,26 @@ function main() {
     }
 
     try {
-        db.exec('BEGIN IMMEDIATE');
+        // target 多態定位：PIC_TERM_KEY → session_id（與 agent-statusline.mjs 相同優先序）
+        const termKey  = process.env.PIC_TERM_KEY || null;
+        const sessionId = resolveSessionId('cc');
+        const target   = termKey || sessionId;
 
-        // 一道：session_id 查到 → resume 新視窗（session 同，WT 換）→ UPDATE term_key
-        const reg = db.prepare(
-            'SELECT agent_id, term_key FROM agents WHERE session_id = ?'
-        ).get(sessionId);
-        if (reg) {
-            if (wtSession && reg.term_key !== wtSession) {
-                db.prepare('UPDATE agents SET term_key = ? WHERE session_id = ?')
-                  .run(wtSession, sessionId);
-            }
-            db.exec('COMMIT');
-            db.close(); process.exit(0);
-        }
-
-        // 二道：term_key 查到 → 同視窗新 session（WT 同，session 換）→ UPDATE session_id
-        if (wtSession) {
-            const regByWt = db.prepare(
-                'SELECT agent_id FROM agents WHERE term_key = ? LIMIT 1'
-            ).get(wtSession);
-            if (regByWt) {
-                db.prepare('UPDATE agents SET session_id = ? WHERE term_key = ?')
-                  .run(sessionId, wtSession);
-                db.exec('COMMIT');
-                db.close(); process.exit(0);
-            }
-        }
-        db.exec('COMMIT');
+        const result = getAgentStatus(db, target);
         db.close();
 
+        if (result.registered) process.exit(0);
+
         const idHint = sessionId ? `session=${sessionId.slice(0, 8)}` : '(unknown)';
-        const wtHint = wtSession ? `WT_SESSION=${wtSession.slice(0, 8)}` : 'WT_SESSION=未設定';
-        const result = {
+        const wtHint = termKey ? `PIC_TERM_KEY=${termKey.slice(0, 8)}` : 'PIC_TERM_KEY=未設定';
+        process.stdout.write(JSON.stringify({
             decision: 'block',
             message: `[AUTO-REG] 找不到已登記的 Agent 角色。\n` +
                 `診斷：${idHint}，${wtHint}\n` +
                 `原因：此 session 在 DB 中無對應 session_id 也無對應 term_key。\n` +
-                `修復：請呼叫 register_agent，重新註冊角色(可多重)。\n` +
-                `範例：register_agent CC-PG1+CC-QA1`,
-        };
-        process.stdout.write(JSON.stringify(result) + '\n');
+                `修復：請在前台終端機執行 register.mjs 完成登記(可多重角色)。\n` +
+                `範例：node bin/register.mjs CC-PG1+CC-QA1 --force`,
+        }) + '\n');
         process.exit(0);
     } catch (_) {
         try { db.close(); } catch (__) {}

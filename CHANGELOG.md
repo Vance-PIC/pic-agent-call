@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.1] - 2026-07-04
+
+### Added
+- **Platform Pool (`CC?` / `AGY?`)**：支援將訊息投遞至特定的平台前綴信箱（如 `CC?` 或 `AGY?`），同平台下任何活躍角色皆能查詢並搶鎖，以進行跨角色平台級協作。
+
+### Changed
+- **Sender Self-Exclusion**：`listUnread` 自動在結果中過濾掉發送者自身的訊息，防止發送者在收件匣（特別是 `any`、`role?` 或 `platform?`）中看到自己發送的任務。
+
+---
+
+## [1.3.0] - 2026-07-04
+
+### Added
+- **`PIC_TERM_KEY_SCOPE` 隔離機制**：在 `scripts/setup-terminal-key.ps1` 中加入 Scope 定義（`vscode` / `windows-terminal` / `generic-shell`），解決從 Windows Terminal 執行 `code .` 啟動 VS Code 時的環境變數繼承污染。只在 Scope 不符時才重新生成 `PIC_TERM_KEY`，保證同分頁子行程的金鑰穩定性。
+- **`term_key_unavailable` 錯誤碼**：當註冊時環境變數同時缺少 `PIC_TERM_KEY` 與 `WT_SESSION` 時，`register_agent` 拒絕註冊並回傳此錯誤碼與診斷資訊。
+
+### Changed
+- **Trusted term_key 安全防禦**：`server.mjs` 中的 `register_agent` handler 徹底與前台傳入的 `target` 參數解耦，強制從 MCP 行程自身的 `process.env.PIC_TERM_KEY || WT_SESSION` 解析 `resolvedTermKey`，防範 AI 偽造 term_key。只有在 Explicit debug flag `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 下才允許 fallback。
+- **Statusline 回歸**：`agent-statusline.mjs` 回歸為 `process.env.PIC_TERM_KEY || resolveSessionId() || ''`，與 register_agent 同源以避免不匹配所致的 `NO AGENT` 錯誤。
+
+---
+
 ## [1.2.1] - 2026-06-29
 
 ### Fixed

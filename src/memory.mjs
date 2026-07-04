@@ -1,6 +1,11 @@
 import { IDENTITY, syncDbToJson, withRetry } from './db.mjs';
 
 export async function addObservation(db, jsonPath, entityName, observationText) {
+    if (!entityName || typeof entityName !== 'string' || entityName.length < 1 || entityName.length > 100)
+        return { success: false, reason: 'validation_error', field: 'entityName' };
+    if (!observationText || typeof observationText !== 'string' || observationText.length < 1 || observationText.length > 2000)
+        return { success: false, reason: 'validation_error', field: 'observationText' };
+
     await withRetry(() => {
         db.exec('BEGIN IMMEDIATE');
         try {
@@ -25,7 +30,7 @@ export async function addObservation(db, jsonPath, entityName, observationText) 
             throw err;
         }
     });
-    await withRetry(() => syncDbToJson(db, jsonPath));
+    syncDbToJson(db, jsonPath);
 }
 
 export function queryEntity(db, entityName) {

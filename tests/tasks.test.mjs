@@ -34,10 +34,22 @@ function makeDb() {
   return initDatabase(':memory:', '/tmp/test-tasks.json');
 }
 
+/** Ensure an agent exists as active so claimTask auth check passes */
+function ensureAgent(db, agent_id) {
+  const existing = db.prepare('SELECT agent_id FROM agents WHERE agent_id = ?').get(agent_id);
+  if (existing) return;
+  // 每個 agent 用自己的 term_key，避免 idx_agents_term_active unique 衝突
+  db.prepare(
+    `INSERT INTO agents (agent_id, status, term_key, last_seen, updated_at)
+     VALUES (?, 'active', ?, datetime('now','localtime'), datetime('now','localtime'))`
+  ).run(agent_id, `term-${agent_id}`);
+}
+
 /** Quick shortcut: create + claim a task, return { db, task_id } */
 async function createAndClaim(db, { feature = 'feat', payload = 'p', agent_id = 'agent-1' } = {}) {
+  ensureAgent(db, agent_id);
   const ct = await createTask(db, feature, 'worker', payload);
-  const cl = claimTask(db, ct.task_id, agent_id);
+  const cl = await claimTask(db, ct.task_id, agent_id);
   return { task_id: ct.task_id, claimResult: cl };
 }
 
@@ -143,13 +155,14 @@ describe('listPendingTasks()', () => {
   test('7. 回傳的任務均為 pending 狀態', async () => {
     await createTask(db, 'feat', 'w', 'p1');
     const t2 = await createTask(db, 'feat', 'w', 'p2');
-    claimTask(db, t2.task_id, 'agent-x');
+    ensureAgent(db, 'agent-x');
+    await claimTask(db, t2.task_id, 'agent-x');
 
     // Directly verify t2 is claimed in DB BEFORE calling listPendingTasks
     const directRow = db.prepare('SELECT status FROM tasks WHERE task_id = ?').get(t2.task_id);
     expect(directRow.status).toBe('claimed');
 
-    const { tasks } = listPendingTasks(db);
+    const { tasks } = await listPendingTasks(db);
 
     // All returned tasks must have status='pending'
     tasks.forEach(t => expect(t.status).toBe('pending'));
@@ -161,7 +174,7 @@ describe('listPendingTasks()', () => {
     await createTask(db, 'feat', 'worker-B', 'pay-b');
     await createTask(db, 'feat', 'worker-A', 'pay-c');
 
-    const { tasks, count } = listPendingTasks(db, 'worker-A');
+    const { tasks, count } = await listPendingTasks(db, 'worker-A');
 
     expect(count).toBe(2);
     tasks.forEach(t => expect(t.assign_to).toBe('worker-A'));
@@ -174,8 +187,8 @@ describe('listPendingTasks()', () => {
     // Register agent-slow with last_seen backdated so timeout SQL fires.
     // listPendingTasks checks: agents.last_seen < now - agent_timeout_sec
     db.prepare(
-      `INSERT OR IGNORE INTO agents (agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec)
-       VALUES ('agent-slow', datetime('now','localtime','-31 minutes'), 'offline', 120, 30)`
+      `INSERT OR IGNORE INTO agents (agent_id, last_seen, status, agent_timeout_sec, poll_interval_sec, term_key)
+       VALUES ('agent-slow', datetime('now','localtime','-31 minutes'), 'offline', 120, 30, 'term-agent-slow')`
     ).run();
 
     // Set task to claimed by agent-slow
@@ -190,7 +203,7 @@ describe('listPendingTasks()', () => {
     expect(before.status).toBe('claimed');
 
     // listPendingTasks triggers the timeout release
-    const { tasks } = listPendingTasks(db);
+    const { tasks } = await listPendingTasks(db);
 
     const released = tasks.find(t => t.task_id === task_id);
     expect(released).toBeDefined();
@@ -209,8 +222,8 @@ describe('claimTask()', () => {
   // 10. 成功領取，status → claimed
   test('10. 成功領取任務，status 變為 claimed', async () => {
     const { task_id } = await createTask(db, 'feat', 'worker', 'data');
-
-    const result = claimTask(db, task_id, 'agent-1');
+    ensureAgent(db, 'agent-1');
+    const result = await claimTask(db, task_id, 'agent-1');
 
     expect(result.success).toBe(true);
     expect(result.task_id).toBe(task_id);
@@ -224,17 +237,20 @@ describe('claimTask()', () => {
   // 11. 重複領取，回傳 already_claimed
   test('11. 重複領取同一任務，回傳 already_claimed', async () => {
     const { task_id } = await createTask(db, 'feat', 'worker', 'dup');
-    claimTask(db, task_id, 'agent-1');
+    ensureAgent(db, 'agent-1');
+    ensureAgent(db, 'agent-2');
+    await claimTask(db, task_id, 'agent-1');
 
-    const second = claimTask(db, task_id, 'agent-2');
+    const second = await claimTask(db, task_id, 'agent-2');
 
     expect(second.success).toBe(false);
     expect(second.reason).toBe('already_claimed');
   });
 
   // 12. 不存在 task_id，回傳 not_found
-  test('12. 不存在的 task_id，回傳 not_found', () => {
-    const result = claimTask(db, 'task-does-not-exist', 'agent-1');
+  test('12. 不存在的 task_id，回傳 not_found', async () => {
+    ensureAgent(db, 'agent-1');
+    const result = await claimTask(db, 'task-does-not-exist', 'agent-1');
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('not_found');
@@ -252,7 +268,8 @@ describe('completeTask()', () => {
   // 13. 成功完成，status → completed
   test('13. 成功完成任務，status 變為 completed', async () => {
     const ct   = await createTask(db, 'feat-complete', 'worker', 'complete-payload');
-    claimTask(db, ct.task_id, 'agent-done');
+    ensureAgent(db, 'agent-done');
+    await claimTask(db, ct.task_id, 'agent-done');
     const result = await completeTask(db, ct.task_id, '{"ok":true}');
 
     expect(result.success).toBe(true);
@@ -288,7 +305,8 @@ describe('failTask()', () => {
   // 15. 成功標記失敗，status → failed
   test('15. 成功標記任務失敗，status 變為 failed', async () => {
     const ct = await createTask(db, 'feat-fail', 'worker', 'fail-payload');
-    claimTask(db, ct.task_id, 'agent-fail');
+    ensureAgent(db, 'agent-fail');
+    await claimTask(db, ct.task_id, 'agent-fail');
 
     const result = await failTask(db, ct.task_id, 'something went wrong');
 
@@ -304,7 +322,8 @@ describe('failTask()', () => {
   // 16. fail_reason 為空，回傳 validation_error
   test('16. fail_reason 為空字串，回傳 validation_error', async () => {
     const ct = await createTask(db, 'feat', 'worker', 'payload');
-    claimTask(db, ct.task_id, 'agent-1');
+    ensureAgent(db, 'agent-1');
+    await claimTask(db, ct.task_id, 'agent-1');
 
     const result = await failTask(db, ct.task_id, '');
 
@@ -315,7 +334,8 @@ describe('failTask()', () => {
   // extra: fail_reason 為 null，回傳 validation_error
   test('16b. fail_reason 為 null，回傳 validation_error', async () => {
     const ct = await createTask(db, 'feat', 'worker', 'p2');
-    claimTask(db, ct.task_id, 'agent-1');
+    ensureAgent(db, 'agent-1');
+    await claimTask(db, ct.task_id, 'agent-1');
 
     const result = await failTask(db, ct.task_id, null);
 

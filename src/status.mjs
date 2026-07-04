@@ -2,7 +2,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readAgentSettings } from './db.mjs';
+import { readAgentSettings, withRetry } from './db.mjs';
 
 // 進程級快取：避免重複掃目錄
 let _cachedAgyConvId = undefined;
@@ -100,12 +100,10 @@ export function findAgentIdConflict(db, agentId, sessionId) {
     ).get(agentId, sessionId) || null;
 }
 
-// 處理換角色時的孤兒訊息：
-// 1. 找舊 agent_id 的所有 UNREAD 訊息
-// 2. 對每個 sender 發送 channel 通知
-// 3. 把孤兒訊息標記為 ORPHANED
+// @internal 處理換角色時的孤兒訊息：
+// 由 registerAgent 外層 transaction 包覆呼叫，不可再起 nested transaction，不可 export
 // 回傳 orphan_count
-export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
+function _handleOrphanedMessages(db, oldAgentId, newAgentId) {
     const orphans = db.prepare(
         `SELECT message_id, sender, message FROM agent_collaboration_channel
          WHERE receiver = ? AND status = 'UNREAD'`
@@ -118,42 +116,49 @@ export function handleOrphanedMessages(db, oldAgentId, newAgentId) {
              (message_id, sender, receiver, priority, message, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))`
     );
-
     const markOrphaned = db.prepare(
         `UPDATE agent_collaboration_channel
          SET status = 'ORPHANED', updated_at = datetime('now','localtime')
          WHERE message_id = ?`
     );
 
-    // 蒐集 sender 集合，每個 sender 只通知一次
     const notifiedSenders = new Set();
-
-    db.exec('BEGIN IMMEDIATE');
-    try {
-        for (const row of orphans) {
-            if (!notifiedSenders.has(row.sender)) {
-                notifiedSenders.add(row.sender);
-                const notifyMsgId = `msg-${randomUUID()}`;
-                const notifyText = JSON.stringify({
-                    type: 'ORPHAN_NOTICE',
-                    original_receiver: oldAgentId,
-                    new_agent_id: newAgentId,
-                    message: `[系統] ${oldAgentId} 已重新登記為 ${newAgentId}，您傳送給 ${oldAgentId} 的訊息已成為孤兒訊息（ORPHANED），請重新傳送給 ${newAgentId}。`,
-                });
-                insertNotify.run(notifyMsgId, 'SYSTEM', row.sender, 8, notifyText);
-            }
-            markOrphaned.run(row.message_id);
+    for (const row of orphans) {
+        if (!notifiedSenders.has(row.sender)) {
+            notifiedSenders.add(row.sender);
+            const notifyMsgId = `msg-${randomUUID()}`;
+            const notifyText = JSON.stringify({
+                type: 'ORPHAN_NOTICE',
+                original_receiver: oldAgentId,
+                new_agent_id: newAgentId,
+                message: `[系統] ${oldAgentId} 已重新登記為 ${newAgentId}，您傳送給 ${oldAgentId} 的訊息已成為孤兒訊息（ORPHANED），請重新傳送給 ${newAgentId}。`,
+            });
+            insertNotify.run(notifyMsgId, 'SYSTEM', row.sender, 8, notifyText);
         }
-        db.exec('COMMIT');
-    } catch (err) {
-        try { db.exec('ROLLBACK'); } catch (_) {}
-        throw err;
+        markOrphaned.run(row.message_id);
     }
-
     return orphans.length;
 }
 
-// 解析多角色字串 → [{ agentId, role }]
+// public wrapper：自開 transaction，供外部直接呼叫
+export async function handleOrphanedMessages(db, oldAgentId, newAgentId) {
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            const count = _handleOrphanedMessages(db, oldAgentId, newAgentId);
+            db.exec('COMMIT');
+            return count;
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
+}
+
+// §6.12.4.2：agent_id 禁止 GUID 格式，防止與 term_key/session_id 多態解析衝突
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 解析多角色字串 → [{ agentId, role }] 或 null（含 GUID 時）
 // 輸入：agentId="PJM、PDM、SA" 或 "AGY-PJM,AGY-PDM"
 // sessionId 用於決定平台前綴（CC- 或 AGY-）
 function _parseAgentIds(rawAgentId, sessionId) {
@@ -163,97 +168,144 @@ function _parseAgentIds(rawAgentId, sessionId) {
     const prefix = isAgy ? 'AGY-' : (isCc ? 'CC-' : (!process.env.CLAUDE_CODE_SESSION_ID ? 'AGY-' : 'CC-'));
 
     const parts = rawAgentId.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
-    return parts.map(part => {
+    const result = [];
+    for (const part of parts) {
         const upper = part.toUpperCase();
         const hasPrefix = upper.startsWith('CC-') || upper.startsWith('AGY-');
+        const rawToken = hasPrefix ? part.replace(/^(?:CC-|AGY-)/i, '') : part;
+        // 原始 token 與去前綴後 token 均禁止 GUID 格式
+        if (GUID_RE.test(part) || GUID_RE.test(rawToken)) return null;
         const fullId = hasPrefix ? part : `${prefix}${part}`;
-        const role = hasPrefix ? part.replace(/^(?:CC-|AGY-)/i, '') : part;
-        return { agentId: fullId, role };
-    });
+        const role = rawToken;
+        result.push({ agentId: fullId, role });
+    }
+    return result;
+}
+
+// v1.3.0 term_key 嚴格解析（跨 CLI 通用，見 SDD-Spec.md §5.2 / §9）
+// server.mjs 的 register_agent handler 必須在呼叫 registerAgent() 前呼叫本函式，
+// 取得 trusted resolvedTermKey，嚴禁將 AI 傳入的 target 直接當 term_key 寫入 DB。
+export function resolveTrustedTermKey(target) {
+    const picTermKey = process.env.PIC_TERM_KEY;
+    const wtSession = process.env.WT_SESSION;
+    const debugFlag = process.env.PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY === '1';
+
+    if (picTermKey) {
+        return { resolvedTermKey: picTermKey, warning: null };
+    }
+    if (wtSession) {
+        return {
+            resolvedTermKey: wtSession,
+            warning: 'PIC_TERM_KEY missing, falling back to WT_SESSION. Consider setting PIC_TERM_KEY.',
+        };
+    }
+    if (debugFlag && target) {
+        return {
+            resolvedTermKey: target,
+            warning: 'emergency/debug only: PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1 in use, falling back to untrusted target as term_key. DO NOT USE IN PRODUCTION.',
+        };
+    }
+    return {
+        resolvedTermKey: null,
+        reason: 'term_key_unavailable',
+        diagnostics: {
+            has_pic_term_key: false,
+            has_wt_session: false,
+            target_received: !!target,
+        },
+    };
 }
 
 // Upsert agent registration
-// v1.1.0：支援多角色解析（逗號/頓號/分須/斜線/空格分隔）
-// v1.1.2：加 termKey 參數，寫入 agents.term_key（傳入 WT_SESSION，跨 session 重啟穩定）
-// v1.1.3：三道防線 upsert — 一道:resume(換視窗), 二道:同視窗新session, 三道:INSERT或衝突
-// v1.1.4：三態模型（active/attached/offline），移除 is_primary
-// 回傳 { success, registered_agents, session_id, forced, term_key, orphans_notified? }
-export function registerAgent(db, sessionId, agentId, role, forced = false, termKey = null) {
+// v1.2.2：target 必填（lib 層卡控），async + withRetry，timeout 納入同 transaction
+//         forced/非 forced 均先降 active→attached 釋放 idx_agents_term_active 鎖
+//         forced SQL 同時卡控 session_id + term_key 防誤踢跨視窗角色
+// 回傳 Promise<{ success, registered_agents, session_id, forced, term_key, orphans_notified? }>
+export async function registerAgent(db, sessionId, agentId, role, forced = false, target, timeout) {
+    // v1.2.2：target 必填
+    if (!target || !target.trim()) {
+        return { success: false, reason: 'target_required' };
+    }
+
+    const resolvedTermKey = target.trim();
     const parsed = _parseAgentIds(agentId, sessionId);
+    if (!parsed) {
+        return { success: false, reason: 'invalid_agent_id_format' };
+    }
 
-    let totalOrphans = 0;
-    const registeredAgents = [];
+    return withRetry(() => {
+        let totalOrphans = 0;
+        const registeredAgents = [];
 
-    const resolvedTermKey = termKey || '';
-    // 視窗轉移：同 term_key 下舊 session 整批設為 offline
-    if (resolvedTermKey) {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+        // 視窗轉移：同 term_key 下舊 session 整批設為 offline
         db.prepare(
             `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
              WHERE term_key = ? AND session_id != ?`
         ).run(resolvedTermKey, sessionId);
-    }
-    // forced 模式才釋放 active 鎖，讓新名單第一個搶 active；非 forced 靠 hasActiveInSession 防重複
-    if (forced) {
+
+        // 不論 forced 與否，先將當前 session 的 active 角色降為 attached，
+        // 釋放 idx_agents_term_active unique index，讓新名單第一角色安全升 active
         db.prepare(
             `UPDATE agents SET status = 'attached', updated_at = datetime('now','localtime')
              WHERE session_id = ? AND status = 'active'`
         ).run(sessionId);
-    }
 
-    for (const { agentId: aid, role: derivedRole } of parsed) {
-        const finalRole = (parsed.length === 1 && role) ? role : derivedRole;
-        const newStatus = registeredAgents.length === 0 ? 'active' : 'attached';
+        for (const { agentId: aid, role: derivedRole } of parsed) {
+            const finalRole = (parsed.length === 1 && role) ? role : derivedRole;
+            // 迴圈中第一個 → active，其餘 → attached
+            const newStatus = registeredAgents.length === 0 ? 'active' : 'attached';
 
-        if (forced) {
-            // forced：孤兒訊息處理後強制更新（跳過三道防線衝突檢查）
-            const oldRows = db.prepare(
-                `SELECT agent_id, term_key FROM agents WHERE agent_id = ? AND session_id != ?`
-            ).all(aid, sessionId);
-            for (const { agent_id: oldId, term_key: oldTermKey } of oldRows) {
-                // 只有跨視窗強奪（term_key 不同）才孤兒化；同視窗重啟保留訊息
-                if (oldTermKey && termKey && oldTermKey === termKey) continue;
-                totalOrphans += handleOrphanedMessages(db, oldId, aid);
+            if (forced) {
+                // forced：孤兒訊息處理後強制更新（跳過三道防線衝突檢查）
+                const oldRows = db.prepare(
+                    `SELECT agent_id, term_key FROM agents WHERE agent_id = ? AND session_id != ?`
+                ).all(aid, sessionId);
+                for (const { agent_id: oldId, term_key: oldTermKey } of oldRows) {
+                    // 只有跨視窗強奪（term_key 不同）才孤兒化；同視窗重啟保留訊息
+                    if (oldTermKey && resolvedTermKey && oldTermKey === resolvedTermKey) continue;
+                    totalOrphans += _handleOrphanedMessages(db, oldId, aid);
+                }
+                db.prepare(
+                    `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
+                ).run(aid, sessionId);
+
+                db.prepare(
+                    `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, datetime('now','localtime'), datetime('now','localtime'))
+                     ON CONFLICT(agent_id) DO UPDATE SET
+                         role = excluded.role,
+                         session_id = excluded.session_id,
+                         term_key = excluded.term_key,
+                         last_seen = excluded.last_seen,
+                         status = excluded.status,
+                         updated_at = excluded.updated_at`
+                ).run(aid, finalRole || null, sessionId, resolvedTermKey, newStatus);
+
+                registeredAgents.push({ agent_id: aid, role: finalRole || null });
+                continue;
             }
-            db.prepare(
-                `DELETE FROM agents WHERE agent_id = ? AND session_id != ?`
-            ).run(aid, sessionId);
 
-            db.prepare(
-                `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, datetime('now','localtime'), datetime('now','localtime'))
-                 ON CONFLICT(agent_id) DO UPDATE SET
-                     role = excluded.role,
-                     session_id = excluded.session_id,
-                     term_key = excluded.term_key,
-                     last_seen = excluded.last_seen,
-                     status = excluded.status,
-                     updated_at = excluded.updated_at`
-            ).run(aid, finalRole || null, sessionId, resolvedTermKey, newStatus);
+            // 一道防線：同 session 既有記錄 → resume（換視窗後 session 不變）
+            const fence1 = db.prepare(
+                `SELECT agent_id FROM agents WHERE agent_id = ? AND session_id = ?`
+            ).get(aid, sessionId);
+            if (fence1) {
+                db.prepare(
+                    `UPDATE agents SET
+                         role = ?,
+                         term_key = ?,
+                         last_seen = datetime('now','localtime'),
+                         status = ?,
+                         updated_at = datetime('now','localtime')
+                     WHERE agent_id = ? AND session_id = ?`
+                ).run(finalRole || null, resolvedTermKey, newStatus, aid, sessionId);
+                registeredAgents.push({ agent_id: aid, role: finalRole || null });
+                continue;
+            }
 
-            registeredAgents.push({ agent_id: aid, role: finalRole || null });
-            continue;
-        }
-
-        // 一道防線：DB 中已有 agent_id = aid AND session_id = sessionId → resume（換視窗）
-        const fence1 = db.prepare(
-            `SELECT agent_id FROM agents WHERE agent_id = ? AND session_id = ?`
-        ).get(aid, sessionId);
-        if (fence1) {
-            db.prepare(
-                `UPDATE agents SET
-                     role = ?,
-                     term_key = ?,
-                     last_seen = datetime('now','localtime'),
-                     status = ?,
-                     updated_at = datetime('now','localtime')
-                 WHERE agent_id = ? AND session_id = ?`
-            ).run(finalRole || null, resolvedTermKey, newStatus, aid, sessionId);
-            registeredAgents.push({ agent_id: aid, role: finalRole || null });
-            continue;
-        }
-
-        // 二道防線：DB 中已有 agent_id = aid AND term_key = termKey（termKey 非 null）→ 同視窗新 session
-        if (resolvedTermKey) {
+            // 二道防線：同 term_key 既有記錄 → 同視窗新 session
             const fence2 = db.prepare(
                 `SELECT agent_id FROM agents WHERE agent_id = ? AND term_key = ?`
             ).get(aid, resolvedTermKey);
@@ -270,82 +322,205 @@ export function registerAgent(db, sessionId, agentId, role, forced = false, term
                 registeredAgents.push({ agent_id: aid, role: finalRole || null });
                 continue;
             }
+
+            // 三道防線：INSERT；其他 session 占用則回傳衝突
+            const conflict = findAgentIdConflict(db, aid, sessionId);
+            if (conflict) {
+                db.exec('ROLLBACK');
+                return {
+                    success: false,
+                    reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
+                    conflict,
+                    debug_sessionId: sessionId,
+                    debug_homedir: process.env.HOME || process.env.USERPROFILE || null,
+                };
+            }
+
+            db.prepare(
+                `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
+                 VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, datetime('now','localtime'))`
+            ).run(aid, finalRole || null, sessionId, resolvedTermKey, newStatus);
+            registeredAgents.push({ agent_id: aid, role: finalRole || null });
         }
 
-        // 三道防線：兩者均不命中 → INSERT；若有衝突（其他 session 占用），拋出衝突錯誤
-        const conflict = findAgentIdConflict(db, aid, sessionId);
-        if (conflict) {
-            return {
-                success: false,
-                reason: `agent_id ${aid} already registered by session ${conflict.session_id}`,
-                conflict,
-                debug_sessionId: sessionId,
-                debug_homedir: process.env.HOME || process.env.USERPROFILE || null,
-            };
+        // §6.12.7：forced 時，同 session + term_key 下不在新名單的殘留角色軟離線
+        if (forced && parsed.length > 0) {
+            const newIds = parsed.map(p => p.agentId);
+            const placeholders = newIds.map(() => '?').join(',');
+            db.prepare(
+                `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                 WHERE session_id = ? AND term_key = ? AND agent_id NOT IN (${placeholders})`
+            ).run(sessionId, resolvedTermKey, ...newIds);
         }
 
-        // 同 session 已有 active 時，新 INSERT 用 'attached'
-        const hasActiveInSession = db.prepare(
-            `SELECT 1 FROM agents WHERE session_id = ? AND status = 'active' LIMIT 1`
-        ).get(sessionId);
-        const insertStatus = hasActiveInSession ? 'attached' : newStatus;
+        // timeout 納入同 transaction 原子寫入（單位：分鐘，DB 存秒）
+        if (timeout != null && Number.isFinite(timeout) && timeout > 0) {
+            const timeoutSec = Math.round(timeout * 60);
+            const aids = registeredAgents.map(r => r.agent_id);
+            if (aids.length > 0) {
+                const ph = aids.map(() => '?').join(',');
+                db.prepare(
+                    `UPDATE agents SET agent_timeout_sec = ? WHERE agent_id IN (${ph})`
+                ).run(timeoutSec, ...aids);
+            }
+        }
 
-        db.prepare(
-            `INSERT INTO agents (agent_id, role, session_id, term_key, last_seen, status, updated_at)
-             VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, datetime('now','localtime'))`
-        ).run(aid, finalRole || null, sessionId, resolvedTermKey, insertStatus);
-        registeredAgents.push({ agent_id: aid, role: finalRole || null });
-    }
+        db.exec('COMMIT');
 
-    // §6.12.7: forced 時，同 session 不在新名單的殘留角色軟離線
-    if (forced && parsed.length > 0) {
-        const newIds = parsed.map(p => p.agentId);
-        const placeholders = newIds.map(() => '?').join(',');
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE session_id = ? AND agent_id NOT IN (${placeholders})`
-        ).run(sessionId, ...newIds);
-    }
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
 
-    const result = {
-        success: true,
-        registered_agents: registeredAgents,
-        session_id: sessionId,
-        forced: forced,
-        term_key: resolvedTermKey,
-    };
+        const result = {
+            success: true,
+            registered_agents: registeredAgents,
+            session_id: sessionId,
+            forced: forced,
+            term_key: resolvedTermKey,
+        };
+        if (totalOrphans > 0) result.orphans_notified = totalOrphans;
+        return result;
+    });
+}
 
-    if (totalOrphans > 0) result.orphans_notified = totalOrphans;
+// 多態註銷（v1.2.2 新增）
+// target 優先序：agent_id → term_key → session_id
+export async function unregisterAgent(db, target) {
+    if (!target) return { success: false, reason: 'target is required' };
 
-    return result;
+    return withRetry(() => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            // 嘗試 agent_id（支援逗號分隔多角色）
+            const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+            const byAgentId = db.prepare(
+                `SELECT agent_id FROM agents WHERE agent_id = ? AND status IN ('active','attached')`
+            );
+            const hitsByAgentId = ids.flatMap(id => {
+                const row = byAgentId.get(id);
+                return row ? [row.agent_id] : [];
+            });
+            if (hitsByAgentId.length > 0) {
+                const placeholders = hitsByAgentId.map(() => '?').join(',');
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE agent_id IN (${placeholders})`
+                ).run(...hitsByAgentId);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: hitsByAgentId };
+            }
+
+            // 嘗試 term_key
+            const byTermKey = db.prepare(
+                `SELECT agent_id FROM agents WHERE term_key = ? AND status IN ('active','attached')`
+            ).all(target);
+            if (byTermKey.length > 0) {
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE term_key = ? AND status IN ('active','attached')`
+                ).run(target);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: byTermKey.map(r => r.agent_id) };
+            }
+
+            // 嘗試 session_id
+            const bySession = db.prepare(
+                `SELECT agent_id FROM agents WHERE session_id = ? AND status IN ('active','attached')`
+            ).all(target);
+            if (bySession.length > 0) {
+                db.prepare(
+                    `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                     WHERE session_id = ? AND status IN ('active','attached')`
+                ).run(target);
+                db.exec('COMMIT');
+                return { success: true, unregistered_agents: bySession.map(r => r.agent_id) };
+            }
+
+            db.exec('ROLLBACK');
+            return { success: false, reason: `no active agent found for target: ${target}` };
+        } catch (err) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw err;
+        }
+    });
 }
 
 // 查詢 agent 狀態（給 statusline 用）
 // v1.1.0 多角色：回傳 { agent_id, role, unread, display, registered_agents }
 // display 格式：▶🔴1·CC-PG1  🟢0·CC-SA1
-// primaryAgentId: 由 server.mjs 從快取讀出，標示 ▶
-export function getAgentStatus(db, sessionId, primaryAgentId) {
-    const regs = getRegistrations(db, sessionId);
-    if (!regs || regs.length === 0) return null;
+// v1.2.2：target 必填，多態定位（agent_id → term_key → session_id），移除 primaryAgentId 外部傳入
+export function getAgentStatus(db, target) {
+    if (!target) return { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' };
+
+    // 多態定位：agent_id → term_key → session_id
+    let regs = null;
+    let resolvedSessionId = null;
+
+    // 嘗試 agent_id（單一或多角色）
+    const ids = target.split(/[,，、;；\/\+\s]+/).map(s => s.trim()).filter(Boolean);
+    if (ids.length > 0) {
+        const placeholders = ids.map(() => '?').join(',');
+        const byAgentId = db.prepare(
+            `SELECT agent_id, role, session_id, term_key, status, last_seen FROM agents
+             WHERE agent_id IN (${placeholders}) AND status IN ('active','attached')
+             ORDER BY created_at ASC`
+        ).all(...ids);
+        if (byAgentId.length > 0) {
+            regs = byAgentId;
+            resolvedSessionId = byAgentId[0].session_id;
+        }
+    }
+
+    // 嘗試 term_key
+    if (!regs) {
+        const byTermKey = getRegistrationsByTermKey(db, target);
+        if (byTermKey.length > 0) {
+            regs = byTermKey;
+            resolvedSessionId = byTermKey[0].session_id;
+        }
+    }
+
+    // 嘗試 session_id
+    if (!regs) {
+        const bySession = getRegistrations(db, target);
+        if (bySession && bySession.length > 0) {
+            regs = bySession;
+            resolvedSessionId = target;
+        }
+    }
+
+    if (!regs || regs.length === 0) {
+        return { registered: false, session_id: null, message: '尚未登記身份，請呼叫 register_agent' };
+    }
 
     const { statusLineFreshnessMin, historyPurgeMin } = readAgentSettings();
     const freshnessSec = statusLineFreshnessMin * 60;
 
-    // 超時掃描與歷史清理：同步執行確保呼叫方立即可見最新狀態
+    // 超時掃描與歷史清理：BEGIN IMMEDIATE 確保兩次 write 原子性，避免讀者看見中間狀態
     try {
-        db.prepare(
-            `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
-             WHERE status IN ('active','attached') AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
-        ).run();
-        db.prepare(
-            `DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || ? || ' minutes')`
-        ).run(historyPurgeMin);
-    } catch (_) {}
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            db.prepare(
+                `UPDATE agents SET status = 'offline', updated_at = datetime('now','localtime')
+                 WHERE status IN ('active','attached') AND last_seen < datetime('now','localtime','-' || agent_timeout_sec || ' seconds')`
+            ).run();
+            db.prepare(
+                `DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || ? || ' minutes')`
+            ).run(historyPurgeMin);
+            db.exec('COMMIT');
+        } catch (innerErr) {
+            try { db.exec('ROLLBACK'); } catch (_) {}
+            throw innerErr;
+        }
+    } catch (err) {
+        process.stderr.write(`[pic-agent-call] getAgentStatus: timeout sweep failed — ${err.message}\n`);
+    }
 
     // 心跳降頻：10s 內不重複更新 last_seen（fire-and-forget，不阻塞 statusline 輸出）
     const lastRow = db.prepare(
         `SELECT MAX(last_seen) as last_seen FROM agents WHERE session_id = ? AND status IN ('active','attached')`
-    ).get(sessionId);
+    ).get(resolvedSessionId);
     const lastSeenMs = lastRow?.last_seen ? new Date(lastRow.last_seen).getTime() : 0;
     const staleSec = (Date.now() - lastSeenMs) / 1000;
     if (staleSec >= 10) {
@@ -353,21 +528,24 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
             try {
                 db.prepare(
                     `UPDATE agents SET last_seen = datetime('now','localtime') WHERE session_id = ? AND status IN ('active','attached')`
-                ).run(sessionId);
-            } catch (_) {}
+                ).run(resolvedSessionId);
+            } catch (err) {
+                // DB 已關閉（test teardown / server shutdown）時靜默跳過，其他錯誤記錄
+                if (err.code !== 'ERR_INVALID_STATE' && !String(err.message).includes('database is not open')) {
+                    process.stderr.write(`[pic-agent-call] heartbeat update failed — ${err.message}\n`);
+                }
+            }
         });
     }
 
-    // primaryAgentId 由外部傳入（server.mjs 讀快取），預設用第一個 active agent
-    if (!primaryAgentId) {
-        primaryAgentId = regs.find(r => r.status === 'active')?.agent_id ?? regs[0].agent_id;
-    }
+    const primaryAgentId = regs.find(r => r.status === 'active')?.agent_id ?? regs[0].agent_id;
 
-    // freshness 判定：以 active agent 的 last_seen 為基準
+    // freshness 判定：以 active agent 的 last_seen 為基準，超過閾值標記 stale（不修改 DB 狀態）
     const activeReg = regs.find(r => r.status === 'active');
+    let sessionFreshness = 'fresh';
     if (activeReg?.last_seen) {
         const ageSec = (Date.now() - new Date(activeReg.last_seen).getTime()) / 1000;
-        if (ageSec > freshnessSec) return null;
+        if (ageSec > freshnessSec) sessionFreshness = 'stale';
     }
 
     const unreadStmt = db.prepare(
@@ -384,7 +562,7 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
     const parts = [];
 
     // No Jitter：regs 已依 created_at ASC 排列，不重新排序
-    for (const { agent_id, role } of regs) {
+    for (const { agent_id, role, last_seen } of regs) {
         let row;
         if (role) {
             row = unreadStmt.get(agent_id, `${role}?`);
@@ -394,23 +572,34 @@ export function getAgentStatus(db, sessionId, primaryAgentId) {
         const unread = row?.count || 0;
         totalUnread += unread;
 
+        // 每個 agent 個別計算 freshness
+        let agentFresh = true;
+        if (last_seen) {
+            const agentAgeSec = (Date.now() - new Date(last_seen).getTime()) / 1000;
+            if (agentAgeSec > freshnessSec) agentFresh = false;
+        }
+        const freshness = agentFresh ? 'fresh' : 'stale';
+
         const isPrimary = agent_id === primaryAgentId;
-        const dot = unread > 0 ? '🔴' : '🟢';
+        const dot = !agentFresh ? '🟡' : (unread > 0 ? '🔴' : '🟢');
         const prefix = isPrimary ? '\x1b[33m▶\x1b[0m' : '';
         parts.push(`${prefix}${dot}${unread}·${agent_id}`);
 
-        registeredAgents.push({ agent_id, role: role || null, unread });
+        registeredAgents.push({ agent_id, role: role || null, unread, freshness });
     }
 
     const display = parts.join('  ');
     const primary = regs.find(r => r.agent_id === primaryAgentId) ?? regs[0];
 
     return {
+        registered: true,
         agent_id: primary.agent_id,
         role: primary.role || null,
         unread: totalUnread,
+        freshness: sessionFreshness,
         display,
         registered_agents: registeredAgents,
+        session_id: resolvedSessionId,
     };
 }
 
@@ -456,3 +645,6 @@ export function getAgentsByPlatformStatus(db, platformPrefix) {
         return { agent_id, role: role || null, status, unread: row?.count || 0 };
     });
 }
+
+// @deprecated no-op — 保留 export 供 api-spec 相容，實作已由 getAgentStatus 內嵌清理取代
+export function cleanExpiredAgentSessionCache(db, sessionDir) {}

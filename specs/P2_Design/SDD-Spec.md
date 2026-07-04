@@ -1,4 +1,4 @@
-# SDD-Spec (L1) — pic-agent-call v1.1.3
+# SDD-Spec (L1) — pic-agent-call v1.3.1
 
 ## 1. 專案概述
 
@@ -7,8 +7,27 @@
 
 - **Runtime**: Node.js >= 22.0.0（`node:sqlite` 內建）
 - **Protocol**: MCP via `@modelcontextprotocol/sdk`（本地測試掛載名稱為 `pic-agent-call` 以防新舊版混淆）
-- **Tools**: 20（18 原有 + register_agent + agent_status）
+- **Tools**: 21（8 Memory + 6 Task-Broker + 4 Channel + 3 Agent Status）
 - **Module format**: 純 ESM（`.mjs`）
+
+### 1.1 規格層級與優先權
+
+本專案規格採 L1 / L2 分層：
+
+| Level | 文件 | 權威範圍 |
+|---|---|---|
+| L1 | `SDD-Spec.md` | 架構、行為、invariants、安全與併發規則 |
+| L2 | `api-spec.md` | 模組函式簽名、參數與回傳型態 |
+| L2 | `db-schema.md` | SQLite provider 的物理 schema、index、migration |
+| L2 | `error-codes.md` | normalized error taxonomy 與回傳規則 |
+
+優先權規則：
+
+1. L1 是 architecture / behavior Source of Truth。
+2. L2 不得違反 L1；若衝突，以 L1 為準並開 Spec Fix 更新 L2。
+3. Implementation 不得引入 L1 / L2 都未描述的行為。
+4. `db-schema.md` 的 SQLite DDL 是 provider implementation mechanism，不是可攜式架構 contract。
+5. Deprecated 行為必須明確標記，不得作為新實作依據。
 
 ---
 
@@ -21,6 +40,7 @@ pic-agent-call/
 │   │   ├── requirements.md
 │   │   └── WBS.md
 │   └── P2_Design/
+│       ├── spec-index.md   ← 規格層級與優先權索引
 │       ├── SDD-Spec.md     ← 本文件（L1）
 │       ├── api-spec.md     ← L2：模組函式簽名
 │       ├── db-schema.md    ← L2：DB 表結構
@@ -32,6 +52,7 @@ pic-agent-call/
 │   └── tasks.mjs
 ├── bin/
 │   ├── server.mjs                    ← MCP server 入口
+│   ├── register.mjs                  ← Option D Lite v2 前台註冊 CLI
 │   ├── agent-statusline.mjs          ← 狀態列主程式（CC + AGY 共用）
 │   ├── agent-statusline-wrapper.mjs  ← AGY 狀態列包裝器（拼裝 Quota + Channel 狀態）
 │   ├── setup-agy-statusline.mjs     ← AGY 狀態列一鍵安裝腳本
@@ -53,15 +74,16 @@ pic-agent-call/
 | `src/memory.mjs` | entities / observations / relations CRUD | src/db.mjs |
 | `src/channel.mjs` | 跨代理人訊息 send/list/claim/ack | src/db.mjs |
 | `src/tasks.mjs` | task broker + agents 表 CRUD | src/db.mjs, node:crypto |
-| `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢 | src/db.mjs, node:os, node:crypto |
-| `bin/server.mjs` | MCP transport + 20 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
+| `src/status.mjs` | agent 身份管理：session 解析、register、衝突偵測、孤兒訊息處理、statusline 查詢；目前作為 registration/status shared application module，未來可拆為 registration-service / status-service / lifecycle-service | src/db.mjs, node:os, node:crypto |
+| `bin/server.mjs` | MCP transport + 21 tools 註冊 | src/*, @modelcontextprotocol/sdk, zod |
+| `bin/register.mjs` | Option D Lite v2 前台短行程 Registration Adapter；讀取 `PIC_TERM_KEY`，呼叫共享 `registerAgent()`，不直連 SQLite | src/db.mjs, src/status.mjs |
 | `bin/agent-statusline.mjs` | CC/AGY statusbar hook CLI：優先以 `PIC_TERM_KEY` 查 `agents.term_key`（`getRegistrationsByTermKey`），查無結果才 fallback 至 `session_id`（AGY 或無 `PIC_TERM_KEY` 環境）；DB 無結果則輸出 `NO AGENT` | src/db.mjs, src/status.mjs |
 | `bin/agent-statusline-wrapper.mjs` | Gemini/Antigravity 狀態列整合包裝器：拼裝 Quota 狀態與 Agent 訊息狀態。**v1.1.4 重構**：廢棄 `process.stdin.on('end')` 等待觸發模式，改為啟動時以**非阻塞式 readline（50ms timeout）** 讀取 stdin 並同時解析環境變數（`ANTIGRAVITY_CONVERSATION_ID`、`MEMORY_DB_PATH`），解決 AGY CLI 不關閉 stdin 造成的 1500ms 超時 `exit status 1` 問題。50ms 後若無 stdin 輸入則以環境變數降級處理；若環境變數亦未設定則以空值降級。 | node:child_process, node:fs, node:path, node:os, node:readline |
 | `~/.gemini/statusline-wrapper.mjs` | **Thin Forwarder（使用者層）**：由 `setup-agy-statusline.mjs` 安裝至使用者家目錄，作為 `settings.json` `statusLine.command` 的進入點。**⚠️ 禁止硬編碼**：forwarder 內的 `target` 路徑嚴禁寫死為固定絕對路徑；必須由 `setup-agy-statusline.mjs` 在安裝執行時動態解析出 `bin/agent-statusline-wrapper.mjs` 的真實絕對路徑，並以字串替換方式注入至 forwarder 的 `target` 變數中後，再寫入使用者家目錄。如此可確保跨使用者、跨安裝路徑皆能正確執行，且命名變更時只需重新執行安裝腳本即可，無需手動修改 forwarder。 | node:child_process, node:fs, node:os |
 
 ---
 
-## 4. MCP Tools 清單（18 tools）
+## 4. MCP Tools 清單（21 tools）
 
 ### Memory（客製化）
 | Tool | 對應模組函式 |
@@ -101,17 +123,142 @@ pic-agent-call/
 | Tool | 對應模組函式 |
 |------|-------------|
 | register_agent | status.registerAgent |
+| unregister_agent | status.unregisterAgent |
 | agent_status | status.getAgentStatus |
 
-#### register_agent 規範（v1.1.3）
+#### register_agent 參數與清理規範（v1.2.2 優化 / v1.3.0 term_key 解析修訂）
 
-`register_agent` MCP tool 更新 SQLite `agents` 表，並將 `PIC_TERM_KEY`（Windows Terminal session GUID）寫入 `agents.term_key` 欄位作為跨 session 識別依據。
+為了提高 API 參數命名的精確度，並落實多視窗安全防禦，`register_agent` 進行以下修正：
+1. **`target` 必填參數與 Library 卡控**：原本選填的 `wt_session` 參數重命名為 `target` (string, **Required**)。在 `registerAgent` 函式內第一步必須強制檢驗，若 `target` 為空直接回傳 `{ success: false, reason: 'target_required' }`，拒絕寫入空 `term_key`。
+2. **v1.3.0 term_key 嚴格解析（跨 CLI 通用）**：
+   - `server.mjs`（MCP 入口）的 `register_agent` handler **MUST** 從 **`process.env.PIC_TERM_KEY || process.env.WT_SESSION`** 取得 `resolvedTermKey`。
+   - **⚠️ Invariant（不可破壞）**：三道防線所使用的 `term_key` 必須來自 trusted `resolvedTermKey`，嚴禁直接使用 AI 傳入的 `target` 作為 term_key。
+   - 若 `PIC_TERM_KEY` 與 `WT_SESSION` **均不存在**：**MUST** 直接拒絕，回傳 normalized error：
+     ```json
+     { "success": false, "reason": "term_key_unavailable",
+       "diagnostics": { "has_pic_term_key": false, "has_wt_session": false, "target_received": true } }
+     ```
+   - **CI / Docker / 遠端非互動環境**：上述環境預設缺少 `PIC_TERM_KEY` / `WT_SESSION`，行為應為拒絕，不可默默 fallback 至 `target`。若需在 CI 中使用，必須明確注入 `PIC_TERM_KEY` 至環境變數。
+   - **Debug/Legacy Fallback（緊急備援，非 production path）**：僅在環境變數 `PIC_ALLOW_UNTRUSTED_TARGET_TERM_KEY=1` 明確設定時，才允許 fallback 至 AI 傳入的 `target`，且 **MUST** 輸出 warning log，規格標註為 `emergency/debug only`，不得在正式環境啟用。
+   - `target` 參數僅作為 **auth/定位用途**（多態解析 agent_id / term_key / session_id），不再強制作為 term_key 寫入 DB。
+   - 此規則對 **AGY CLI、Claude Code、未來任何以 CLI spawn MCP 的平台** 皆通用。
+3. **原子化 Timeout 與 Transaction Retry**：
+   - 將 `timeout` 參數移入 `registerAgent` 函式內部，使其與註冊寫入在同一個 transaction 內原子更新。
+   - 將 `registerAgent` 定義為 **`async`** 函式，且整個 transaction 包裹在 `withRetry` 非同步重試邏輯中，解決多視窗並發寫入時的 `SQLITE_BUSY` 鎖定錯誤。
+4. **強制接管卡控與 Active 鎖定釋放**：
+   - 不論是否為 `forced` 註冊，在執行註冊迴圈前，都必須先將當前會話下的所有 active 角色狀態重置為 `attached`，以釋放 `idx_agents_term_active` 索引，防範主從角色切換時的唯一性約束衝突。
+   - 在 `forced=true` 清理舊角色時，SQL 同時過濾 `session_id` 與 `term_key`。
+   （以保證只有當前視窗下的舊角色會被設為 offline，絕不誤殺相同 session_id 但 different term_key 的其他視窗角色）。
 
-> **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位承擔。
+> **⚠️ [廢棄 v1.1.3]** 本地快取檔 `agent-sessions/<termKey>.json` 機制已廢棄，不再由 `register_agent` 寫入。跨 session 識別職責改由 DB `agents.term_key` 欄位與三道防線承擔。
+
+#### unregister_agent 規格（v1.2.2 新增）
+
+為滿足註冊管理的完整 CRUD 閉環，新增主動註銷工具：
+1. **輸入參數**：`target` (string, **Required**) — 註銷定位標的。
+2. **多態註銷邏輯**：
+   - 優先序 1：若 `target` 命中 DB 中的 `agent_id`（支援多角色逗號分割），將該角色的 status 改為 `'offline'`。
+   - 優先序 2：若 `target` 命中 DB 中的 `term_key`，將該視窗下的所有活躍角色 status 改為 `'offline'`。
+   - 優先序 3：若 `target` 命中 DB 中的 `session_id`，將該對話會話下的所有活躍角色 status 改為 `'offline'`。
+
+#### agent_status 多態查詢規範（v1.2.2 重構）
+
+為了徹底阻斷因 `session_id` 誤判碰撞產生的狀態列污染，`agent_status` 進行以下重構：
+1. **輸入參數**：`target` (string, **Required**) — 查詢定位標的。原自動推導與 fallback 掃描目錄邏輯完全移除。
+2. **多態查詢與心跳邏輯**：
+   - 伺服器依據 `target` 的值（按 `agent_id` ➔ `term_key` ➔ `session_id` 優先序）在 DB 中檢索出對應的活躍角色名單。
+   - 對這批活躍角色執行 heartbeats 更新（將其 `last_seen` 更新為當前時間）。
+   - 撈取這批角色的未讀訊息聯集並計算總數，回傳狀態列所需要的 display 文字與燈號（狀態列 wrapper 腳本在背景呼叫時，必須帶入 `target=$env:PIC_TERM_KEY`）。
+
+#### channel_list_unread 多態未讀查詢（v1.2.2 優化 / v1.3.1 平台池與發送者自排除）
+
+1. **輸入參數**：
+   - `target` (string, **Required**) — 查詢定位標的。
+   - `receiver` (string, Optional) — 指定接收者。
+2. **多態與安全規則**：
+   - 內部先以 `target` 進行多態解析獲取當前活躍角色名單。
+   - **安全隔離卡控**：若傳入了 `receiver` 參數，則必須驗證該 `receiver` 包含在上述解析出的活躍名單中，否則拋出 `403 Forbidden`，防止跨視窗非法拉取他人信箱。
+   - **平台池 (Platform Pool) 支援 (v1.3.1 新增)**：除了原有的 `agent_id` 與 `role?` 角色池之外，新增平台池支援（例如 `CC?`, `AGY?`）。系統必須提取活躍角色的前綴（即 `agent_id` 以 `-` 分割之首項，如 `CC` 或 `AGY`），將 `platform?` 自動納入查詢聯集。
+   - **發送者自排除 (Sender Self-Exclusion) (v1.3.1 新增)**：為防止發送者在自己的收件匣中看到自己發送的訊息（特別是 `any`、`role?` 或 `platform?` 任務），在查詢未讀時，**MUST** 自動排除 `sender` 包含在當前 `target` 關聯的活躍角色群（`regs.agent_id`）中的訊息。
+   - 以名單內所有角色的 `agent_id`、`role?` 及 `platform?` 郵箱，撈取排除自發送後的未讀訊息聯集。
+
+#### 協作與任務 API 去 Session 化安全直查（v1.2.2 重構）
+
+在以下 API 的安全驗證中，徹底去 Session 化以杜絕 session 碰撞阻擋：
+- **`channel_claim`**、**`channel_ack`**、**`claim_task`**：
+  - 內部實作將**不再呼叫 `resolveSessionId()`**。
+  - 安全驗證直接以傳入的 `agent_id` 去資料庫直查其 `status` 是否為 `'active'` 或 `'attached'`，只要該角色為活躍狀態即通過驗證放行。
+- **`channel_send` (MCP 安全防偽造)**：
+  - 移除了 `bin/server.mjs` 中的 `findAgentIdConflict` 預檢，將所有衝突判定收束至 `registerAgent` 內部交易中以保證原子性。
+  - MCP 工具層移除 `sender` 參數，改為必填的 `target` 參數。
+  - 內部實作由 `target` 定位出活躍角色群，並強制提取其中狀態為 `'active'` 的主角色作為發送者 `sender`。若無主角色則拒絕發送。
+- **`listUnread` 安全卡控 (v1.2.2)**：
+  - 只要 `target` 參數無效（無法解析出任何活躍身份），不論傳入的 `receiver` 為何（即使為空），一律拋出 `403` 越權拒絕，落實預設防禦原則。
+- **`create_task`**、**`complete_task`**、**`fail_task`**：
+  - 移除對 `sessionId` 的參數傳遞與隱式比對，簡化為無狀態任務申報。
 
 ---
 
-## 5. 參照文件（L2）
+---
+
+## 5. Agent Registration Architecture（Option D Lite v2）
+
+### 5.1 決策摘要
+
+採用 **Option D Lite v2** 作為 v1.2.2 的初始 terminal-aware registration 方案。
+
+```text
+Trusted Foreground Terminal / Hook
+    ↓
+bin/register.mjs
+    ↓
+Shared Registration Service (`src/status.mjs::registerAgent`)
+    ↓
+Storage Contract boundary
+    ↓
+SQLite Provider implementation
+```
+
+### 5.2 Trust Boundary
+
+| 路徑 | 信任等級 | 規範 |
+|---|---|---|
+| 使用者直接在目標 terminal 執行 `node bin/register.mjs <agent_id>` | Trusted | 可繼承正確 `PIC_TERM_KEY` |
+| Foreground Hook 以 deterministic 規則引導或觸發 CLI | Trusted / Controlled | 必須可證明在前台 terminal environment 執行 |
+| LLM Command Runner 背景執行 CLI | Conditional | 只有在該平台已驗證會繼承正確 terminal environment 時才可啟用 |
+| LLM 透過 tool call 傳遞 terminal key | Untrusted | **不得作為預設 term_key 來源**；AI 透過 run_command 抓取的 PIC_TERM_KEY 屬於新 spawn 的子 shell，與 CLI 主行程的 WT_SESSION 不同，不可信任 |
+| **MCP Server 讀取自身 process.env.PIC_TERM_KEY（v1.3.0）** | **Trusted** | **MCP server 為 CLI 子行程，process.env.PIC_TERM_KEY 天然繼承自視窗注入 UUID，與 statusline 同源，此為唯一可信 term_key 來源** |
+
+### 5.3 `bin/register.mjs` 職責
+
+`bin/register.mjs` 是前台 short-lived Registration Adapter。它 MUST：
+
+1. 從前台 process environment 讀取 `PIC_TERM_KEY`；若缺失，MAY fallback 至 `WT_SESSION`，但 `PIC_TERM_KEY` 是主 identity。
+2. 解析 `agent_id`、`--force`、`--role`、`--timeout` 等 CLI 參數。
+3. 呼叫共享 `registerAgent()` application service。
+4. 成功時 `process.exit(0)`，失敗時輸出 normalized error 並 `process.exit(1)`。
+
+`bin/register.mjs` MUST NOT：
+
+- 直接操作 SQLite。
+- 直接寫入 `agents` table。
+- 內含 SQL、transaction、locking 或狀態轉移邏輯。
+- 自行實作 active / attached / offline 轉移規則。
+- 將 `PIC_TERM_KEY` 交給 LLM 搬運。
+
+### 5.4 延後範圍
+
+以下能力 deferred，不屬於 v1.2.2 初始實作必要範圍：
+
+- `pic-agent start` 完整 foreground launcher。
+- Claude/Agy/Codex child process wrapping。
+- Heartbeat / lease registration。
+- Local IPC runtime。
+- `node-pty` 或 PTY emulation。
+
+完整 launcher 不是因為 Node `spawn()` 必然失效而被否決，而是因為互動式 AI CLI 對 TTY、signal、raw mode、Windows ConPTY 的行為需經實測。第一階段以短行程 foreground CLI 降低風險。
+
+## 6. 參照文件（L2）
 
 - 詳細函式簽名 → [api-spec.md](./api-spec.md)
 - DB 表結構 → [db-schema.md](./db-schema.md)
@@ -119,9 +266,9 @@ pic-agent-call/
 
 ---
 
-## 6. 架構優化與併發性能規範 (v1.1.0 重構規格)
+## 7. 架構優化與併發性能規範 (v1.1.0 重構規格)
 
-為了解決併發寫入鎖定、JSON 備份 I/O 阻塞、Session 掃描開銷及通道偽造問題，專案引進以下重構規格：
+為了解決併發寫入鎖定、JSON 備份 I/O 阻塞、Session 掃描開銷及通道偽造問題，專案引進以下重構規格。凡與 v1.2.2 target / term_key / Option D Lite v2 規格衝突的舊 session-based 描述，均以 v1.2.2 規格為準，舊描述必須視為 migration note 或 deprecated behavior：
 
 1.  **全寫入 / 交易 withRetry 包裹**：
     *   所有包含 `INSERT` / `UPDATE` / `DELETE` 動作的資料庫操作，必須全面包裹在 `withRetry` 指數退避重試邏輯中。
@@ -133,9 +280,10 @@ pic-agent-call/
     *   `resolveSessionId` 優先解析環境變數（如 `ANTIGRAVITY_CONVERSATION_ID` 或 `CLAUDE_CODE_SESSION_ID`），並將動態掃描目錄結果快取在進程記憶體中，防止重複硬碟 I/O。
 4.  **Channel 訊息 Sender 安全認證**：
     *   `channel_send` 的 MCP 暴露工具層 schema **移除前端傳入的 `sender` 參數**，以防偽造。
-    *   核心 `channel.mjs` 中的 `sendMessage` API 簽名調整為 `sendMessage(db, receiver, message, sender, sessionId, priority?)`。API 內部將執行安全性校驗：若 `sender` 不為 `SYSTEM`，則必須在 DB 中存在以 `sessionId` 登記的 `agent_id` 且必須與 `sender` 完全相符；不吻合或未註冊則拋出安全性錯誤。
+    *   **[已廢棄 v1.2.2] 舊會話綁定發送 (`sendMessage` with `sessionId`)**：原簽名 `sendMessage(db, receiver, message, sender, sessionId, priority?)` 及依賴 `sessionId` 的發言人校驗已被廢棄，移出新實作。
+    *   **`sendMessage` 去 Session 化直查 (v1.2.2)**：`channel.mjs` 中的 `sendMessage` 簽名簡化為 `sendMessage(db, receiver, message, sender, priority?)`。其安全性驗證直接以傳入的發送信件人 `sender` (即 `agent_id`) 去資料庫直查其 `status` 是否為活躍狀態（`'active'` 或 `'attached'`），只要為活躍狀態即放行，以防範 session 碰撞。
+    *   MCP Tool Handler 調用 `channel_send` 時，不再傳入 `sessionId`。它改為使用必填的 `target` 參數，從當前視窗活躍角色中，強制提取狀態為 `'active'` 的主角色作為 `sender` 傳入。
     *   單元測試可直接在 DB 註冊測試 agent 或以 `SYSTEM` 作為 sender，維持測試友善度。
-    *   MCP Tool Handler 自動透過 `resolveSessionId()` 獲取當前 `sessionId` 與查得之 `agent_id` 當作參數傳給 `sendMessage`。
 5.  **[廢棄 v1.1.3] Session 快取檔案自動清理機制（`cleanExpiredAgentSessionCache`）**：
     *   此機制已於 v1.1.3 移除。跨 session 識別改由 hook 三道防線維護 `term_key` 一致性（詳見 §6.11）。
 6.  **動作前訊息稽核門禁 (Pre-action Message Check Gate) 機制**：
@@ -147,26 +295,36 @@ pic-agent-call/
     *   拼裝成並列格式輸出：當前視窗主身份固定排在首位且其前置加上 `▶` 標示，其餘角色依序並列顯示（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`），各角色間以兩個空格區隔，不使用 `|` 符號。確保使用者在單視窗切換或多實例並行時，能即時掌握平台全角色的未讀狀態，消除訊息漏看盲區。
 8.  **AI 啟動時自動與互動式引導註冊機制 (Auto & Interactive Registration)**：
     *   規範 AI 代理人於新會話啟動執行 `Session Startup Protocol` 時，若呼叫 `agent_status` 發現當前 session 狀態為 `registered: false`：
-        1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 註冊（如 `CC-PG1` 或 `AGY-SA`）。
-        2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent` 完成註冊，方可開始後續工作。
+        1.  **優先自動註冊**：AI 應根據當前環境變數、進程名稱，或讀取 `task.md` 中被指派且待執行的 WBS 任務，自動推導其應擔任的角色，並自動調用 `register_agent` 完成註冊，方可開始後續工作。
+        2.  **互動式引導**：若無法自動推導，AI 必須主動在對話框中提供明確的角色選項詢問人類；在人類回覆選取後，自動調用 `register_agent`完成註冊，方可開始後續工作。
         3.  **命名與放行規範**：互動式註冊選單的選項，AGY 側必須嚴格採用以 `AGY-` 為前綴的標準 PIC 角色（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM`）；CC 側則為 `CC-` 前綴。此外，AGY 側與 CC 側的 `UserPromptSubmit` hook 腳本（`autoreg-gate`）必須內含關鍵字放行邏輯，當 prompt 含有 `register_agent` 或 `register agent` 時豁免 session 登記檢查，避免雞生蛋閉鎖。
-        4.  **Hook 強制等級**：`autoreg-gate` hook 採 **`block`**（v1.1.3 已升級，從 warn 改為 block）。block 訊息含診斷資訊（session prefix、PIC_TERM_KEY prefix）與 `register_agent` 呼叫範例，協助 AI 快速定位並完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        4.  **Hook 強制等級與 API 對齊 (v1.2.2 重構)**：`autoreg-gate` hook 採 **`block`** 防線（v1.1.3 升級）。為了落實與 MCP 伺服器核心口徑的一致性，`autoreg-gate` 腳本（`pic-agent-autoreg-gate.js`）內部**禁止直接直連 SQLite 執行 SQL 語句或資料表異動**。改為動態 `import` 載入 `src/status.mjs` 的 `getAgentStatus(db, target)` 與 `resolveSessionId` 方法，利用統一的 target 多態定位機制取得當前活躍狀態。若 `status.registered` 為 `false`，則執行 `block` 並輸出含診斷資訊（session、WT_SESSION 前綴）與 `register_agent` 呼叫範例的訊息，引導 Swarm 完成登記。AI 自律（Session Startup Protocol）為主要執行保障，hook 為強制防線。
+        5.  **Option D Lite v2 前台 CLI 物理註冊適配器規格 (v1.2.2.1 補強)**：
+            *   **前台短行程註冊 CLI (`bin/register.mjs`)**：
+                *   第一階段實作一個獨立的前台 Node.js CLI 註冊腳本 `bin/register.mjs`，使用者手動或 CLI 腳本呼叫格式為：`node bin/register.mjs <agent_id> [--force] [--role <role>] [--timeout <minutes>]`。它只作為前台 Registration Adapter，不包裹 Claude/Agy/Codex CLI 進程。
+                *   **環境捕獲與執行限制**：該 CLI 必須在可繼承目標 Terminal 前台環境中運行，以自動捕獲前台即時的 `process.env.PIC_TERM_KEY` 或 `process.env.WT_SESSION` 作為視窗金鑰（`target`）。
+                *   **零資料庫直連**：`register.mjs` **不得直接操作 SQLite，不得寫 agents table，且內部不得包含 any SQL 語句、transaction 交易控制或狀態轉移邏輯**。
+                *   **依賴共享註冊服務**：`register.mjs` 在組織好 `RegisterAgentCommand` 後，必須動態 `import` 並調用 `src/status.mjs` 共享的 `registerAgent()` 應用服務（Application Service）完成註冊。所有持久化必須經過 Storage Contract，由 SQLite Provider 實作，以確保整個系統僅存有唯一的一套商業註冊邏輯。
+            *   **LLM 命令執行限制**：LLM Command Runner（背景/遠端執行器）在背景執行 `register.mjs` 不視為預設可信路徑，不得假設其子 shell 會自動繼承前台環境變數，除非該平台已物理驗證其繼承性。
+            *   **前端 Hook 與引導防線**：`UserPromptSubmit` hook 腳本 (`pic-agent-autoreg-gate.js`) 依然保持純唯讀防守，當 status 檢查 `registered: false` 時攔截放行，並在終端機輸出診斷資訊與執行引導，指示使用者在前台執行 `node bin/register.mjs` 完成註冊。
+            *   **延遲實作範圍**：完整進程包裹的 Foreground Launcher (`pic-agent start`)、心跳機制 (heartbeat)、租期機制 (lease)、以及 Local IPC 通訊機制全部延後至後續階段。
 9.  **Channel 訊息 Receiver 與操作安全防護 (橫向越權防護)**：
-    *   `channel_list_unread`、`channel_claim`、`channel_ack` 等核心 API 及對應 Tool Handlers，在執行時必須傳入當前連線的 `sessionId`。
-    *   API 內部執行安全性校驗與接收信箱判定：
+    *   **[已廢棄 v1.2.2] 訊息操作之 sessionId 驗證**：原規格要求 `channel_list_unread`、`channel_claim`、`channel_ack` 在執行時必須傳入並比對連線 `sessionId` 的安全防禦已被移除。
+    *   **去 Session 化安全直查 (v1.2.2)**：所有訊息管道操作均改為**無會話狀態 (De-sessionized) 的安全直查**：
+        *   **`channel_list_unread`**：呼叫端必須傳入必填的 `target`。系統內部直接以 `target` 執行多態解析獲取活躍角色名單。若傳入了 `receiver` 參數，則必須驗證該 `receiver` 包含在活躍名單中，否則拋出 `403` 越權錯誤，防止跨視窗非法拉取他人信箱。
+        *   **`channel_claim` 與 `channel_ack`**：操作者傳入的 `agent_id` 直接在 DB 中直查其活躍狀態（`status` 為 `active` 或 `attached`），只要為活躍狀態即通過驗證放行，不再比對 `sessionId`。
         *   **當前活躍角色定位**：由 DB 查詢 `agents.term_key = PIC_TERM_KEY`（若 `PIC_TERM_KEY` 環境變數存在）取得角色列表，其第一筆即為當前活躍角色（主身份）；若無 `PIC_TERM_KEY` 或查無資料，則 fallback 使用 `sessionId` 查詢 `agents` 表之第一筆作為活躍角色。本地快取檔 `agent-sessions/<termKey>.json` 已於 v1.1.3 廢棄，不再作為角色識別依據。
-        *   `channel_list_unread`：若傳入特定的 `receiver` 參數，該 receiver 必須為當前活躍角色（或其對應之 role 郵箱），否則拋出 403 越權錯誤。返回結果應包含發送給該活躍角色、其 role 郵箱（格式為 `role?`）、以及發送給 `'any'` 且狀態為 `'UNREAD'` 的訊息。若 `receiver` 未指定或為 `'all'`，則系統自動拉取該 `sessionId` 綁定之所有活躍角色各自未讀訊息的聯集。
-        *   `channel_claim` 與 `channel_ack`：嚴格限制只能操作當前活躍角色有權處理的訊息。操作者傳入之 `agent_id` 必須與當前活躍角色（主身份）完全相符，且訊息接收者（`receiver`）必須為該當前活躍角色（或其 `role?` 郵箱，或為 `'any'` 且狀態為 `'UNREAD'`），禁止越權搶鎖或確認非本活躍角色的訊息。若傳入之 `agent_id` 與定位出的當前活躍角色不符，API 必須拒絕並回傳 403 錯誤。
+        *   `channel_claim` 與 `channel_ack` 限制只能操作當前活躍角色有權處理的訊息。訊息接收者（`receiver`）必須為該 `agent_id`（或其 `role?` 郵箱，或為 `'any'` 且狀態為 `'UNREAD'`），禁止越權搶鎖或確認非本活躍角色的訊息。若傳入之 `agent_id` 與定位出的當前活躍角色不符，API 必須拒絕並回傳 403 錯誤。
 10. **一會話多角色並存與接管規範 (One-Session Multi-Identities & Takeover)**：
     *   **資料庫約束調整**：物理刪除 `agents` 表上對 `session_id` 的唯一索引 (`idx_agents_session_id`)。允許一個會話 (`session_id`) 同時登記多個不同的 `agent_id`（如 `AGY-SA`、`AGY-PG`、`AGY-QA`、`AGY-PJM`、`AGY-PDM` 同時綁定同一個 `session_id`），第一個為 `active` (主角色)，其餘為 `attached` (掛載角色)。
-    *   **多角色分隔解析**：`register_agent` 支援在 `agent_id` 與 `role` 參數中傳入以逗號（半形 `,` 或全形 `，`）、頓號（`、`）、斜線（`/`）、加號（`+`）、分號（`;` 或 `；`）或空格等分隔的多個字串（例如 `agent_id` 填入 `"SA/PG/QA/PJM/PDM"` 或是 `"AGY-SA+AGY-PG+AGY-QA+AGY-PJM+AGY-PDM"`）。系統在執行 `register_agent` 時**必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）進行 Token 分割**，將其拆解成多個獨立的角色分別呼叫註冊流程，嚴禁將整串含有分隔符號的字串直接當作單一 `agent_id` 寫入資料庫。
+    *   **多角色分隔解析**：`register_agent` 支援在 `agent_id` 與 `role` 參數中傳入以逗號（半形 `,` 或全形 `，`）、頓號（`物理符號`）、斜線（`/`）、加號（`+`）、分號（`;` 或 `；`）或空格等分隔的多個字串（例如 `agent_id` 填入 `"SA/PG/QA/PJM/PDM"` 或是 `"AGY-SA+AGY-PG+AGY-QA+AGY-PJM+AGY-PDM"`）。系統在執行 `register_agent` 時**必須使用正規表達式（如 `/[,\/\\+，、；;\s]+/`）進行 Token 分割**，將其拆解成多個獨立的角色分別呼叫註冊流程，嚴禁將整串含有分隔符號的字串直接當作單一 `agent_id` 寫入資料庫。
     *   **平台前綴補全與角色自動推導**：若拆分後的子角色識別碼（例如 `SA`）不包含平台前綴（`AGY-` 或 `CC-`）：
         *   系統應根據當前 `sessionId` 的類型自動補齊前綴。若為 Antigravity 連線（前綴 `agy-`）則補上 `AGY-` 前綴變成 `AGY-SA`；若為 Claude Code 連線（前綴 `cc-`）則補上 `CC-SA`。
         *   系統應自動將該無前綴的角色名（如 `SA`、`PG`、`QA`、`PJM`、`PDM`）填入其對應 SQL 的 `role` 欄位中，除非 `role` 參數有額外指定對應的角色。
-    *   **[廢棄 v1.1.3] 快取檔案擴充與同步**：本地快取檔 `agent-sessions/<termKey>.json` 的格式規範（含 `agent_id`、`agent_ids`、`term_key`、`ts` 欄位）已全段移除。快取機制廢棄，改由 DB `agents.term_key` 欄位與 hook 三道防線（§6.11）承擔跨 session 識別職責。
+    *   **[廢棄 v1.1.3] 快取檔案擴充與同步**：本地快取檔 `agent-sessions/<termKey>.json` 的格式規範（含 `agent_id`、`agent_ids` , `term_key`, `ts` 欄位）已全段移除。快取機制廢棄，改由 DB `agents.term_key` 欄位與 hook 三道防線（§6.11）承擔跨 session 識別職責。
     *   **心跳與狀態列同步更新（讀寫分離與心跳降頻）**：
         *   狀態列（`getAgentStatus`）輪詢因頻率極高（每秒執行），為了徹底防止 SQLite 寫鎖定造成的 `ETIMEDOUT` 阻塞超時，必須實施**讀寫分離**與**心跳降頻**：
-            1.  **心跳降頻**：系統在查詢當前 session 狀態時，必須先對比 DB 中已存的 `last_seen` 與當前時間。若時間差小於 **10 秒**，則**直接跳過 DB UPDATE 心跳操作**，只執行唯讀查詢（SELECT）。因為 WAL 模式下 SELECT 絕對不會被寫鎖阻塞，這能將 90% 以上的輪詢轉為無鎖唯讀。
+            1.  **心跳降頻**：系統在查詢當前 session 狀態時，必須先對比 DB 中已存 `last_seen` 與當前時間。若時間差小於 **10 秒**，則**直接跳過 DB UPDATE 心跳操作**，只執行唯讀查詢（SELECT）。因為 WAL 模式下 SELECT 絕對不會被寫鎖阻塞，這能將 90% 以上的輪詢轉為無鎖唯讀。
             2.  **非同步/重試保護**：若時間差大於等於 10 秒需要執行 `UPDATE agents` 心跳更新，此 Update 操作必須被 `withRetry` 包裹，或以**非同步（async/Promise）背景 fire-and-forget** 方式非阻塞執行。`getAgentStatus` 本身應立即返回未讀數結果，不應被心跳寫入鎖定所阻塞。當前 Session 的心跳更新時，會同時將綁定在此 `session_id` 下的所有 `active` 角色的 `last_seen` 統一更新為當前時間，並且一併確保這些角色的 `status` 被重設/保持為 `'active'`（防止 session 本身活躍但旗下某些未操作的角色因超時被 offline）。
     *   **孤兒訊息處理限制**：只有當舊角色 `previousAgentId` 徹底被註銷或被其他 session 接管，且**不再屬於當前 `sessionId` 的活躍角色名單**時，才可觸發孤兒訊息（ORPHANED）的標記與通知。若舊主身份仍然屬於當前會話的並存活躍角色，則絕對禁止觸發孤兒標記，以防止切換主角色時誤殺並存角色的未讀訊息。
     *   **資料庫約束調整**：物理刪除 `agents` 表上對 `session_id` 的唯一索引 (`idx_agents_session_id`)。
@@ -176,7 +334,7 @@ pic-agent-call/
         *   `getAgentStatus` 回傳的 `unread` 為該 `sessionId` 綁定之所有活躍角色未讀數之總和。
         *   其 `display` 格式改為各角色個別並列顯示，以兩個空格區隔（不使用 `|` 符號）：所有活躍角色在狀態列中固定依註冊創建時間 (created_at ASC) 排列，不再將主角色移至首位；主身份僅在其角色名稱前置加上 `▶` 標示，其位置隨 active 角色狀態動態跳動以維持順序穩定 (No Jitter)（例如：`▶🔴1·AGY-SA  🟢0·AGY-PG  🔴0·AGY-QA  🔴1·AGY-PJM  🟢0·AGY-PDM`）。未讀數 >= 1 顯示為紅色 `🔴N·`，未讀數為 0 顯示為綠色 `🟢0·`。
     *   **通道 `all` 與 `any` 訊息機制**：
-        *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色 in `listUnread` 時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
+        *   **`any` 信箱**：若訊息的 `receiver === 'any'`，該 sessionId 的當前活躍角色在 listUnread 查詢時可讀取到此訊息。當任一 agent 成功搶鎖（`claimMessage`）後，訊息狀態變為 `IN_PROGRESS` 且 `lock_owner` 設為該 agent_id，其他人在 `listUnread` 中便無法再看見此訊息（先搶先得）。
         *   **`all` 信箱 (廣播)**：當發送端調用 `channel_send` 且指定 `receiver === 'all'` 時，`sendMessage` 內部應自動查詢 DB 中所有註冊且狀態為 `'active'` 的活躍角色（排除發送者 sender 本身），並為名單中的每個活躍 `agent_id` 各自寫入一筆獨立的未讀訊息紀錄，其 `receiver` 設為該 `agent_id`。
     *   **強制接管與孤兒訊息限制**（v1.1.4 強化）：
         *   `force: true` 的強行接管行為僅限於「相同 `agent_id` 被另一個不同 `session_id` 再次註冊」的衝突場景。此時只允許從資料庫中更新該特定 `agent_id` 的 `session_id` 與 `term_key` 綁定，嚴禁波及當前 DB 中該舊 Session 綁定的其他角色紀錄。
@@ -211,7 +369,7 @@ pic-agent-call/
    * **訊息領取與確認 (I5)**：`claimMessage` 與 `ackMessage` 中的主角色解析與權限校驗，**必須**包含在資料庫事務內部，或實施 best-effort 讀寫一致性防護，防止在讀取角色到搶鎖/確認訊息之間發生主角色越權或奪占。
 
 2. **時區與時間格式統一 SSoT 規格 (I1, I2)**：
-   * 全模組（含 `src/tasks.mjs`、`src/memory.mjs` 等）寫入或更新時間欄位（如 `completed_at`、`updated_at`、`created_at` 等）時，**禁止在 JavaScript 端使用 `getTimezoneOffset` 等手動 offset 運算**，以防 DST 邊界或非整小時時區計算被截斷。
+   * 全模組（含 `src/tasks.mjs`、`src/memory.mjs` 等）寫入或更新時間欄位（如 `completed_at` , `updated_at`, `created_at` 等）時，**禁止在 JavaScript 端使用 `getTimezoneOffset` 等手動 offset 運算**，以防 DST 邊界或非整小時時區計算被截斷。
    * 資料庫內所有時間寫入，**統一、強制使用 SQLite 的 `datetime('now','localtime')` 函式**，確保全系統時間事實的唯一來源與排序一致。
 
 3. **健壯的錯誤處理與防護規格 (C2, I4)**：
@@ -221,29 +379,34 @@ pic-agent-call/
 4. **測試覆蓋防線規格 (I6)**：
    * 為了驗證協作通道（Channel）的安全領取與確認邏輯，必須在 `tests/channel.test.mjs` 中，**新增 `channel_claim` 與 `channel_ack` 的專利整合測試**，特別是模擬併發操作與越權操作的測試場景，以達成 DoDs 測試覆蓋門禁。
 
+4.1 **DB 舊資料遷移與重建表策略 (v1.2.2 裁定)**：
+    - 對於舊資料庫中存在 `term_key IS NULL` 的歷史記錄，統一將其 `term_key` Fallback 設置為 `'legacy-' || agent_id`，且將其狀態 `status` 標記為 `'offline'`。
+    - 為了在舊 DB 物理達成 `term_key TEXT NOT NULL` 約束，migration 必須採用臨時表重建 `agents` 表之方式（複製、清洗、重建索引），而非僅執行簡單的 `ALTER TABLE ADD COLUMN`。
+4.2 **Agent ID 命名慣例約束與 Regex 校驗**：
+    - 為了避免與 GUID 類型的 `term_key` / `session_id` 衝突，`agent_id` 明確禁止使用標準 GUID 格式。
+    - 在 `registerAgent` 與 `_parseAgentIds` 開頭必須加入 GUID 正規表達式比對，若符合則返回 `{ success: false, reason: 'invalid_agent_id_format' }` 拒絕註冊。
+4.3 **createTask TOCTOU 併發防禦**：
+    - 將任務 duplicate hash 的 `SELECT` 檢查移入同一 `BEGIN IMMEDIATE` 交易中，以解決 TOCTOU (Time-of-Check to Time-of-Use) 併發 race condition。
+4.4 **High-Risk 寫入 withRetry 補全範圍**：
+    - 本次 Sprint 強制補全高風險寫入路徑的 `withRetry` 重試保護，包含：`claimMessage`、`ackMessage`、`claimTask`、`unregisterAgent`，以及 `listPendingTasks` 內部的超時釋放 `UPDATE`。
+    - **`claimMessage` 與 `ackMessage` 的 I5 安全卡控**：其內部的 active/attached 活躍授權狀態檢驗，**必須完全在 `BEGIN IMMEDIATE` 內部交易中執行**，以根除 TOCTOU Race Condition 越權漏洞。
+    - 心跳背景更新（`getAgentStatus`）為了避免阻塞狀態列極速刷新，作為低風險技術債豁免，不加 `withRetry`。
+
 5. **多角色三態狀態模型 (Three-State Model) 與轉移規格 (v1.1.4 補正)**：
-   * **欄位結構重整**：徹底廢止原 \`is_primary\` 欄位。在 \`agents\` 表的 DDL 中將 \`status\` 限制為三態，且 **\`term_key\` 欄位明確設為 \`NOT NULL\`**（強制推動 \`PIC_TERM_KEY\` 大一統）：
-     \`\`\`sql
-     term_key TEXT NOT NULL,
-     status   TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active', 'attached', 'offline'))
-     \`\`\`
-   * **三態定義**：
-     * **\`active\`**：主角色 (Primary)。同一 \`term_key\` 物理視窗在同時間僅能有一個 \`active\` 角色，獨佔對話框讀信與 Claim/Ack 特權。
-     * **\`attached\`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
-     * **`active`**：主角色 (Primary)。同一 `term_key` 物理視窗在同時間僅能有一個 `active` 角色，獨佔對話框讀信與 Claim/Ack 特權。
-     * **`attached`**：掛載角色 (Attached)。可多個共存於同視窗下，僅限讀取未讀訊息數，禁止詳細讀信與 Claim。
-     * **`offline`**：離線/超時角色。不顯示於狀態列中。
-   * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色：
+   * **欄位結構重整**：徹底廢止原 `is_primary` 欄位。在 `agents` 表 of DDL 中將 `status` 限制為三態，且 **`term_key` 欄位明確設為 `NOT NULL`**（強制推動 `PIC_TERM_KEY` 大一統）：
      ```sql
-     CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
+      term_key TEXT NOT NULL, -- 移除 DEFAULT ''，強制所有 direct INSERT 顯式傳入
+     status   TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('active', 'attached', 'offline'))
      ```
-   * **視窗移轉 (A/B 情境整批轉移與主角色重設防衝突)**：
-     * 當新會話在當前視窗啟動時，先斷開舊會話的活躍狀態，再整批繫結：
-       ```sql
-       -- 1. 斷開此視窗下其他舊會話的活躍狀態（設為 offline）
-       UPDATE agents SET status = 'offline' WHERE term_key = ? AND session_id != ?
-       ```
-     * **防 Active 鎖定衝突**：當同一個會話（session_id）重新登記並調整角色主從順序時，為了防止在 `for` 迴圈處理第一個角色設為 `'active'` 時，與資料庫中殘留的舊 active 角色發生唯一索引衝突，`registerAgent` **必須在執行註冊迴圈前，先將當前會話（session_id）下的所有角色狀態全部降級/重設為 `'attached'` 以釋放 active 鎖定**：
+   * **三態定義**：
+      * **`active`**：主角色 (Primary)。同一 `term_key` 物理視窗在同時間僅能有一個 `active` 角色，獨佔對話框 `▶` 指針顯示。
+      * **`attached`**：掛載角色 (Attached)。可多個共存於同視窗下，允許正常讀取未讀訊息數、詳細讀信與 Claim/Ack 訊息操作。
+     * **`offline`**：離線/超時角色。不顯示於狀態列中.
+   * **唯一活躍約束**：在 DB 層面建立部分唯一索引，確保同一視窗同一時間僅能有一個 `active` 角色。由於 library 已卡控 `term_key` 不能為空，索引不包含 `AND term_key != ''` 的豁免：
+      ```sql
+      CREATE UNIQUE INDEX idx_agents_term_active ON agents(term_key) WHERE status = 'active'
+      ```
+   * **防 Active 鎖定衝突**：當同一個會話（session_id）重新登記並調整角色主從順序時，為了防止在 `for` 迴圈處理第一個角色設為 `'active'` 時，與資料庫中殘留的舊 active 角色發生唯一索引衝突，`registerAgent` **必須在執行註冊迴圈前，先將當前會話（session_id）下的所有角色狀態全部降級/重設為 `'attached'` 以釋放 active 鎖定**：
        ```sql
        UPDATE agents SET status = 'attached', updated_at = datetime('now','localtime') WHERE session_id = ?
        ```
@@ -276,11 +439,22 @@ pic-agent-call/
      DELETE FROM agents WHERE status = 'offline' AND last_seen < datetime('now','localtime','-' || historyPurgeMin || ' minutes')
      ```
 
-8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正)**：
-   * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝與引導環境設定腳本。
-   * **自動注入行為**：當此安裝或引導腳本執行時，必須在使用者當前的 Shell 環境中檢測並自動注入非空視窗識別碼：
-     * 若發現當前視窗環境變數 `$env:PIC_TERM_KEY`（或舊的 `WT_SESSION`）不存在：
-       * 腳本**必須自動產生一組全新的 UUID 碼**。
-       * 在 Windows (PowerShell/Cmd) 環境下，腳本必須將此 UUID 自動寫入當前活動視窗的環境變數：`$env:PIC_TERM_KEY = "UUID"`。
-       * 在 Unix/Linux/macOS (Bash/Zsh) 環境下，腳本必須將此 UUID 自動執行 `export PIC_TERM_KEY="UUID"` 寫入該 Shell 視窗。
-     * 這保證了後續從該視窗啟動的任何對話框與狀態列定時重新整理進程，都能 100% 自然繼承並共享完全相同的 `PIC_TERM_KEY`。
+8. **狀態列安裝與環境變數自動注入規格 (v1.1.4 補正 / v1.3.0 隔離優化)**：
+   * **腳本範疇**：本專案包含 `bin/setup-statusline.mjs` (Gemini 側) 與 `bin/setup-cc-statusline.mjs` (Claude 側) 一鍵安裝腳本，以及寫入使用者 Profile 的 Terminal 啟動金鑰注入邏輯。
+   * **金鑰隔離設計合約 (v1.3.0)**：
+     - **`PIC_TERM_KEY`**：Terminal 唯一識別 UUID。
+     - **`PIC_TERM_KEY_SCOPE`**：產生該金鑰的 Terminal 類型。列舉值：`vscode` (VS Code 整合終端機)、`windows-terminal` (獨立 Windows Terminal)、`generic-shell` (一般獨立主控台)。
+     - **隔離合約（防止 Windows Terminal 啟動 VS Code 時的變數繼承污染）**：
+       - 若 `PIC_TERM_KEY` 已存在且其 `PIC_TERM_KEY_SCOPE` 與當前運行的 Shell 類型一致，**MUST** 直接沿用（不得重生），以保證同分頁下所有子行程（如 `run_command`、擷取 sub-shell）共用同一個金鑰。
+       - 若在 VS Code 整合終端機環境中，且繼承來的 `PIC_TERM_KEY_SCOPE` 不是 `vscode`（例如繼承自 WT 啟動的 `code .`），則 **SHOULD** 強制重新生成 `PIC_TERM_KEY` 並將 `PIC_TERM_KEY_SCOPE` 更新為 `vscode`，以維持物理分頁隔離。
+       - 徹底廢止對 `WT_SESSION` 環境變數的主動寫入。
+
+   * **狀態轉移合約表**：
+
+     | 當前環境 | `PIC_TERM_KEY` 狀態 | 繼承之 `PIC_TERM_KEY_SCOPE` | 預期行為 (System Behavior) |
+     |---|---|---|---|
+     | 任何環境 | ❌ 缺失 | ❌ 缺失 | 生成全新 UUID 寫入 `PIC_TERM_KEY`，並設定為當前環境對應的 SCOPE |
+     | VS Code | ✅ 存在 | `vscode` | **保留** (子行程/分頁內部穩定) |
+     | VS Code | ✅ 存在 | 非 `vscode` (如繼承自 WT 的 `code .`) | **重新生成** UUID，並將 SCOPE 改為 `vscode` (防止污染) |
+     | Windows Terminal | ✅ 存在 | `windows-terminal` | **保留** (同分頁 nested shell 穩定) |
+     | 一般獨立 Shell | ✅ 存在 | `generic-shell` | **保留** (同分頁 nested shell 穩定) |
