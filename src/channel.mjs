@@ -98,6 +98,12 @@ export async function sendMessage(db, receiver, message, sender, priority) {
 // v1.1.0 listUnread / v1.2.2：target 必填多態解析，移除 sessionId 依賴
 // - 若指定 receiver，需在 target 解析的活躍角色名單中，否則拋出 403
 // - 若 receiver null 或 'all'，列出名單所有角色的未讀聯集（含 any）
+// v1.3.1：支援平台池（CC?/AGY?）+ 發送者自排除
+function _platformPool(agentId) {
+    const dash = agentId.indexOf('-');
+    return dash > 0 ? agentId.substring(0, dash) + '?' : null;
+}
+
 export async function listUnread(db, receiver, target) {
     // 釋放超時的 IN_PROGRESS（withRetry 防 SQLITE_BUSY 吞掉）
     await withRetry(() => {
@@ -125,16 +131,21 @@ export async function listUnread(db, receiver, target) {
             );
         }
 
-        const agentIds = regs.map(r => r.agent_id);
-        const roles    = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
-        const params   = [...agentIds, ...roles, 'any'];
-        const inList   = params.map(() => '?').join(',');
+        const agentIds      = regs.map(r => r.agent_id);
+        const roles         = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
+        // v1.3.1 platform pool
+        const platformPools = [...new Set(agentIds.map(_platformPool).filter(Boolean))];
+        const receiverSet   = [...new Set([...agentIds, ...roles, ...platformPools, 'any'])];
+        const inList        = receiverSet.map(() => '?').join(',');
+        // v1.3.1 self-exclusion
+        const selfExclList  = agentIds.map(() => '?').join(',');
 
         const rows = db.prepare(
             `SELECT * FROM agent_collaboration_channel
              WHERE status = 'UNREAD' AND receiver IN (${inList})
+               AND sender NOT IN (${selfExclList})
              ORDER BY priority DESC, created_at ASC`
-        ).all(...params);
+        ).all(...receiverSet, ...agentIds);
         return { messages: rows, count: rows.length };
     }
 
@@ -146,9 +157,11 @@ export async function listUnread(db, receiver, target) {
             { code: 'ERR_FORBIDDEN' }
         );
     }
-    const agentIds = regs.map(r => r.agent_id);
-    const pools    = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
-    const allowed  = new Set([...agentIds, ...pools]);
+    const agentIds      = regs.map(r => r.agent_id);
+    const rolePools     = regs.map(r => r.role).filter(Boolean).map(r => `${r}?`);
+    // v1.3.1 platform pool in allowed set
+    const platformPools = [...new Set(agentIds.map(_platformPool).filter(Boolean))];
+    const allowed       = new Set([...agentIds, ...rolePools, ...platformPools]);
     if (!allowed.has(receiver)) {
         throw Object.assign(
             new Error(`403: receiver "${receiver}" 不屬於 target 解析的活躍角色，禁止越權查詢`),
@@ -156,13 +169,17 @@ export async function listUnread(db, receiver, target) {
         );
     }
 
+    // v1.3.1 self-exclusion for all specific-receiver paths
+    const selfExclList = agentIds.map(() => '?').join(',');
+
     let rows;
     if (receiver.endsWith('?')) {
         rows = db.prepare(
             `SELECT * FROM agent_collaboration_channel
              WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'any')
+               AND sender NOT IN (${selfExclList})
              ORDER BY priority DESC, created_at ASC`
-        ).all(receiver);
+        ).all(receiver, ...agentIds);
     } else {
         const reg = regs.find(r => r.agent_id === receiver);
         const pool = reg?.role ? `${reg.role}?` : null;
@@ -170,14 +187,16 @@ export async function listUnread(db, receiver, target) {
             rows = db.prepare(
                 `SELECT * FROM agent_collaboration_channel
                  WHERE status = 'UNREAD' AND (receiver = ? OR receiver = ? OR receiver = 'any')
+                   AND sender NOT IN (${selfExclList})
                  ORDER BY priority DESC, created_at ASC`
-            ).all(receiver, pool);
+            ).all(receiver, pool, ...agentIds);
         } else {
             rows = db.prepare(
                 `SELECT * FROM agent_collaboration_channel
                  WHERE status = 'UNREAD' AND (receiver = ? OR receiver = 'any')
+                   AND sender NOT IN (${selfExclList})
                  ORDER BY priority DESC, created_at ASC`
-            ).all(receiver);
+            ).all(receiver, ...agentIds);
         }
     }
     return { messages: rows, count: rows.length };

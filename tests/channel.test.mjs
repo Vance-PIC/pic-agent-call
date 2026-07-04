@@ -221,3 +221,28 @@ test('resolveRegsByTarget: attached-only target 不含 active 角色', () => {
   expect(regs.find(r => r.status === 'active')).toBeUndefined();
   db.close();
 });
+
+// ─── v1.3.1: Platform Pool — CC? 訊息對 CC-* agent 可見 ─────────────────
+test('listUnread v1.3.1: receiver=CC? 的訊息對 CC-PG1 活躍的 session 可見', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-PG1', 'sess-plat1');
+  const m = await sendMessage(db, 'CC?', 'platform-pool-msg', 'SYSTEM', null, 5);
+
+  const result = await listUnread(db, null, 'sess-plat1');
+  const ids = result.messages.map(x => x.message_id);
+  expect(ids).toContain(m.message_id);
+  db.close();
+});
+
+// ─── v1.3.1: Sender Self-Exclusion — 自發 any 訊息不出現在自己的 listUnread ─
+test('listUnread v1.3.1: 自己發給 any 的訊息不應出現在自己的 listUnread 結果中', async () => {
+  const db = makeDb();
+  insertAgent(db, 'CC-PG1', 'sess-selfexcl');
+  // CC-PG1 是活躍 agent，直接以 agent_id 繞過 SYSTEM guard 發送（需在 agents 中）
+  const m = await sendMessage(db, 'any', 'self-sent-msg', 'CC-PG1', null, 5);
+
+  const result = await listUnread(db, null, 'sess-selfexcl');
+  const ids = result.messages.map(x => x.message_id);
+  expect(ids).not.toContain(m.message_id);
+  db.close();
+});
