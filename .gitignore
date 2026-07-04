@@ -6,7 +6,6 @@ evidence/
 feedback/
 docs/superpowers/
 CODE_REVIEW_RESULT.md
-RELEASE_NOTE.md
 UAT_CHECKLIST.md
 .agents/lesson_learned_git_clash.md
 *.local.json
